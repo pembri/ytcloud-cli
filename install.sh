@@ -36,6 +36,9 @@ ok "Termux detected"
 # 2. Packages
 step 2 "Installing packages (python, ffmpeg)"
 apt-get update >/dev/null 2>&1 || warn "Package list update failed, trying anyway"
+NEW_PKGS=""
+command -v python3 >/dev/null 2>&1 || NEW_PKGS="$NEW_PKGS python"
+command -v ffmpeg >/dev/null 2>&1 || NEW_PKGS="$NEW_PKGS ffmpeg"
 pkg install -y python ffmpeg || die "Could not install python/ffmpeg. Check your internet connection and try again."
 command -v python3 >/dev/null 2>&1 || die "python3 not found after install."
 command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg not found after install."
@@ -49,9 +52,11 @@ done
 
 # 3. yt-dlp
 step 3 "Installing yt-dlp (this can take a minute)"
-if python3 -m pip install -U yt-dlp >/dev/null 2>&1; then :
-elif python3 -m pip install -U --break-system-packages yt-dlp >/dev/null 2>&1; then :
-elif pkg install -y yt-dlp >/dev/null 2>&1; then :
+NEW_YTDLP=0; YT_HOW=pip
+command -v yt-dlp >/dev/null 2>&1 || NEW_YTDLP=1
+if python3 -m pip install -U yt-dlp >/dev/null 2>&1; then YT_HOW=pip
+elif python3 -m pip install -U --break-system-packages yt-dlp >/dev/null 2>&1; then YT_HOW=pip
+elif pkg install -y yt-dlp >/dev/null 2>&1; then YT_HOW=pkg
 else die "Could not install yt-dlp."
 fi
 command -v yt-dlp >/dev/null 2>&1 || die "yt-dlp not found after install."
@@ -447,10 +452,12 @@ def do_remove():
 
     record = os.path.join(home, ".ytcloud")
     repo = None
+    lines = []
     if os.path.isfile(record):
         try:
             with open(record, encoding="utf-8") as fh:
-                raw = fh.read().strip()
+                lines = [x.strip() for x in fh.read().splitlines() if x.strip()]
+            raw = lines[0] if lines else ""
         except OSError:
             raw = ""
         cand = os.path.realpath(raw) if raw else ""
@@ -458,6 +465,8 @@ def do_remove():
                 and os.path.isfile(os.path.join(cand, "install.sh"))):
             repo = cand
 
+    tracked = [x for x in lines[1:] if x.startswith(("pip:", "pkg:"))]
+    cache = os.path.join(home, ".cache", "yt-dlp")
     print(paint("This will remove YT Cloud CLI:", "1;33"))
     for p in cmds:
         print(f"  - {p}")
@@ -465,8 +474,14 @@ def do_remove():
         print(f"  - {repo}  (installer folder)")
     if os.path.isfile(record):
         print(f"  - {record}  (install record)")
+    if os.path.isdir(cache):
+        print(f"  - {cache}  (yt-dlp cache)")
     print()
-    print(paint("Python, FFmpeg and yt-dlp are NOT removed (other tools may use them).", "2"))
+    if tracked:
+        names = ", ".join(x.split(":", 1)[1] for x in tracked)
+        print(paint(f"Packages added by the installer ({names}) are asked about separately.", "2"))
+    else:
+        print(paint("Python, FFmpeg and yt-dlp were already on this device, so they are kept.", "2"))
     print()
     if not ask_yn("Continue? (y/n) : "):
         print("Cancelled.")
@@ -480,6 +495,10 @@ def do_remove():
                             f"({n} files, {fmt_size(size)})? (y/n) : ")
         else:
             del_dl = True
+    del_pk = False
+    if tracked:
+        names = ", ".join(x.split(":", 1)[1] for x in tracked)
+        del_pk = ask_yn(f"Also uninstall packages the installer added ({names})? (y/n) : ")
     print()
 
     def drop(path, is_dir=False):
@@ -502,9 +521,25 @@ def do_remove():
         drop(record)
     for p in cmds:
         drop(p)
+    drop(cache, True)
+    if del_pk:
+        def rank(x):
+            kind, name = x.split(":", 1)
+            return (kind != "pip", name == "python")
+        for x in sorted(tracked, key=rank):
+            kind, name = x.split(":", 1)
+            if kind == "pip":
+                c = [sys.executable, "-m", "pip", "uninstall", "-y", name]
+            else:
+                c = ["pkg", "uninstall", "-y", name]
+            rc = subprocess.run(c, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+            if rc == 0:
+                print(paint(f"  ✔ uninstalled {name}", "32"))
+            else:
+                print(paint(f"  ✖ could not uninstall {name}", "31"))
     print()
     print(paint("✔ YT Cloud CLI has been removed.", "32"))
-    print("If the shell still finds 'ytcloud', run: hash -r")
+    print("If the shell still finds 'ytcloud', run: exec $SHELL")
 
 
 def main():
@@ -648,7 +683,16 @@ YTCLOUD_EOF
 chmod 755 "$BIN"
 python3 -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$BIN" \
   || die "Generated ytcloud failed the syntax check."
-printf '%s\n' "$SRC_DIR" > "$RECORD"
+PREV=""
+[ -f "$RECORD" ] && PREV="$(grep -E '^(pkg|pip):' "$RECORD" 2>/dev/null)"
+{
+  printf '%s\n' "$SRC_DIR"
+  {
+    printf '%s\n' "$PREV"
+    for p in $NEW_PKGS; do printf 'pkg:%s\n' "$p"; done
+    [ "$NEW_YTDLP" = 1 ] && printf '%s:yt-dlp\n' "$YT_HOW"
+  } | grep -E '^(pkg|pip):' | sort -u
+} > "$RECORD.tmp" && mv "$RECORD.tmp" "$RECORD"
 hash -r 2>/dev/null
 FOUND="$(command -v ytcloud 2>/dev/null)"
 if [ -n "$FOUND" ] && [ "$FOUND" != "$BIN" ]; then
@@ -659,4 +703,4 @@ ok "Installed: $BIN ($("$BIN" --version))"
 
 printf '\n%s✔ Done!%s Run:  %sytcloud%s\n' "$C_G" "$C_0" "$C_B" "$C_0"
 printf '%sHelp: ytcloud --help   |   Uninstall: ytcloud --remove%s\n' "$C_D" "$C_0"
-printf '%sIf "command not found" appears, run: hash -r%s\n\n' "$C_D" "$C_0"
+printf '%sIf "command not found" appears, run: exec $SHELL%s\n\n' "$C_D" "$C_0"
