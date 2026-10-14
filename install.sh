@@ -1,0 +1,662 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# YT Cloud CLI installer for Termux (single file)
+# Usage: ./install.sh
+
+APP="ytcloud"
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+BIN="$PREFIX/bin/$APP"
+OUT_DIR="/sdcard/Download/ytcloud"
+RECORD="$HOME/.ytcloud"
+SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+TOTAL=5
+
+if [ -t 1 ]; then
+  C_B=$'\033[1;36m'; C_G=$'\033[32m'; C_R=$'\033[31m'
+  C_Y=$'\033[33m'; C_D=$'\033[2m'; C_0=$'\033[0m'
+else
+  C_B=""; C_G=""; C_R=""; C_Y=""; C_D=""; C_0=""
+fi
+
+step() { printf '\n%s[%s/%s]%s %s\n' "$C_B" "$1" "$TOTAL" "$C_0" "$2"; }
+ok()   { printf '  %s✔%s %s\n' "$C_G" "$C_0" "$1"; }
+warn() { printf '  %s!%s %s\n' "$C_Y" "$C_0" "$1"; }
+die()  { printf '\n%s✖ %s%s\n' "$C_R" "$1" "$C_0"; exit 1; }
+
+LINE=$(printf '═%.0s' $(seq 1 34))
+printf '%s╔%s╗\n' "$C_B" "$LINE"
+printf '║   YT Cloud CLI by Rira Project   ║\n'
+printf '╚%s╝%s\n' "$LINE" "$C_0"
+printf '%sInstaller%s\n' "$C_D" "$C_0"
+
+# 1. Environment
+step 1 "Checking environment"
+[ -d "$PREFIX/bin" ] && command -v pkg >/dev/null 2>&1 || die "This installer is for Termux only."
+ok "Termux detected"
+
+# 2. Packages
+step 2 "Installing packages (python, ffmpeg)"
+apt-get update >/dev/null 2>&1 || warn "Package list update failed, trying anyway"
+pkg install -y python ffmpeg || die "Could not install python/ffmpeg. Check your internet connection and try again."
+command -v python3 >/dev/null 2>&1 || die "python3 not found after install."
+command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg not found after install."
+for enc in libmp3lame libopus; do
+  if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q " $enc "; then
+    ok "ffmpeg encoder: $enc"
+  else
+    warn "ffmpeg encoder missing: $enc (that audio format will fail)"
+  fi
+done
+
+# 3. yt-dlp
+step 3 "Installing yt-dlp (this can take a minute)"
+if python3 -m pip install -U yt-dlp >/dev/null 2>&1; then :
+elif python3 -m pip install -U --break-system-packages yt-dlp >/dev/null 2>&1; then :
+elif pkg install -y yt-dlp >/dev/null 2>&1; then :
+else die "Could not install yt-dlp."
+fi
+command -v yt-dlp >/dev/null 2>&1 || die "yt-dlp not found after install."
+ok "yt-dlp $(yt-dlp --version 2>/dev/null)"
+
+# 4. Storage
+step 4 "Checking storage access"
+try_storage() { mkdir -p "$OUT_DIR" 2>/dev/null && [ -w "$OUT_DIR" ]; }
+if ! try_storage; then
+  warn "Storage access is not granted yet."
+  echo "    Tap 'Allow' on the Android permission pop-up..."
+  termux-setup-storage
+  for _ in $(seq 1 45); do
+    sleep 2
+    try_storage && break
+  done
+fi
+try_storage || die "No access to /sdcard. Run 'termux-setup-storage', tap Allow, then run ./install.sh again."
+ok "Downloads folder ready: $OUT_DIR"
+
+# 5. Generate the ytcloud command
+step 5 "Generating the ytcloud command"
+cat > "$BIN" <<'YTCLOUD_EOF'
+#!/usr/bin/env python3
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+VERSION = "v1.0"
+OUT_DIR = "/sdcard/Download/ytcloud"
+CLR = "\033[K"
+USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def paint(s, code):
+    return f"\033[{code}m{s}\033[0m" if USE_COLOR else s
+
+
+def header():
+    title = "YT Cloud CLI by Rira Project"
+    w = len(title) + 6
+    print(paint("╔" + "═" * w + "╗", "1;36"))
+    print(paint("║", "1;36") + paint(title.center(w), "1;37") + paint("║", "1;36"))
+    print(paint("╚" + "═" * w + "╝", "1;36"))
+    print()
+
+
+def heading(text):
+    print(paint(text, "1;33"))
+
+
+def die(msg):
+    print(paint(msg, "31"))
+    sys.exit(1)
+
+
+def print_help():
+    print(f"""{paint('ytcloud', '1')} {VERSION} - download YouTube videos or audio from your terminal.
+
+{paint('USAGE', '1;33')}
+  ytcloud                    Start in interactive mode (it asks for the URL)
+  ytcloud "URL"              Start with a URL, then choose video or audio
+  ytcloud --videos "URL"     Download video directly (skips the format menu)
+  ytcloud --audio "URL"      Download audio directly (skips the format menu)
+  ytcloud --remove           Uninstall YT Cloud CLI completely
+
+{paint('OPTIONS', '1;33')}
+  --videos      Go straight to video download, then pick a resolution
+  --audio       Go straight to audio download, then pick an audio format
+  --version     Show the version number
+  --remove      Uninstall YT Cloud CLI (asks before deleting anything)
+  --help, -h    Show this help message
+
+{paint('NOTES', '1;33')}
+  - Always put the URL in quotes. Links often contain ? and & which the
+    terminal may misread.
+  - Videos are saved as MP4. They are merged without re-encoding, so it is
+    fast and keeps the original quality.
+  - Audio: WEBM and M4A are the original streams from YouTube. MP3, OPUS,
+    FLAC and WAV are converted automatically with FFmpeg.
+  - Files are saved to {OUT_DIR}
+
+{paint('EXAMPLES', '1;33')}
+  ytcloud
+  ytcloud "https://youtu.be/xxxxxxxxxxx"
+  ytcloud --audio "https://youtu.be/xxxxxxxxxxx"
+""")
+
+
+def bad_usage(msg):
+    print(paint(f"Error: {msg}", "31"))
+    print("Try: ytcloud --help")
+    sys.exit(2)
+
+
+def parse_args(argv):
+    mode, url = None, None
+    for a in argv:
+        if a in ("-h", "--help"):
+            header()
+            print_help()
+            sys.exit(0)
+        if a == "--version":
+            print(VERSION)
+            sys.exit(0)
+        if a == "--remove":
+            do_remove()
+            sys.exit(0)
+        if a in ("--videos", "--video", "--audio"):
+            m = 2 if a == "--audio" else 1
+            if mode and mode != m:
+                bad_usage("Use only one of --videos or --audio.")
+            mode = m
+        elif a.startswith("-") and len(a) > 1:
+            bad_usage(f"Unknown option: {a}")
+        elif url is None:
+            url = a
+        else:
+            bad_usage("Only one URL is allowed. Put the URL in quotes.")
+    return mode, url
+
+
+def ask(valid):
+    while True:
+        try:
+            v = input("Input : ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(130)
+        if v.isdigit() and int(v) in valid:
+            return int(v)
+        print("Input tidak valid.")
+
+
+def ask_url():
+    while True:
+        try:
+            u = input("Input URL : ").strip().strip("\"'")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(130)
+        if u:
+            return u
+        print("URL tidak boleh kosong.")
+
+
+def ask_yn(prompt):
+    while True:
+        try:
+            a = input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(130)
+        if a in ("y", "n"):
+            return a == "y"
+
+
+def fmt_dur(s):
+    if not s:
+        return "-"
+    s = int(s)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+def fmt_eta(s):
+    s = int(max(s, 0))
+    return f"{s // 60:02d}:{s % 60:02d}"
+
+
+def fmt_size(b):
+    if b is None:
+        return "-"
+    for u in ("B", "KB", "MB", "GB"):
+        if b < 1024 or u == "GB":
+            return f"{b:.1f}{u}"
+        b /= 1024
+
+
+def num(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def bar(pct):
+    n = int(pct / 10)
+    return "#" * n + "-" * (10 - n)
+
+
+def draw(label, pct, extra):
+    sys.stdout.write(f"\r{label.ljust(12)} [{bar(pct)}] {pct:5.1f}% {extra}{CLR}")
+    sys.stdout.flush()
+
+
+def fsize(f, duration):
+    s = f.get("filesize") or f.get("filesize_approx")
+    if s:
+        return s
+    tbr = f.get("tbr")
+    if tbr and duration:
+        return tbr * 1000 / 8 * duration
+    return None
+
+
+def trim_bytes(s, limit):
+    # Potong berdasarkan byte UTF-8 (bukan jumlah karakter) supaya nama file
+    # tidak melebihi batas 255 byte; "ignore" membuang karakter yang terpotong.
+    return s.encode("utf-8")[:limit].decode("utf-8", "ignore").strip()
+
+
+def run_yt_once(label, args, outtmpl, url):
+    tpl = ("download:YTP|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
+           "%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s")
+    cmd = ["yt-dlp", "--no-playlist", "--quiet", "--no-warnings", "--newline",
+           "--progress", "--progress-template", tpl] + args + ["-o", outtmpl, url]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    errs = []
+    for line in p.stdout:
+        line = line.strip()
+        if line.startswith("YTP|"):
+            _, d, t1, t2, sp, eta = line.split("|")
+            d, total = num(d), num(t1) or num(t2)
+            sp, eta = num(sp), num(eta)
+            if d is not None and total:
+                pct = min(d / total * 100, 100.0)
+                draw(label, pct, f"{fmt_size(sp)}/s ETA {fmt_eta(eta) if eta is not None else '--:--'}")
+        elif line:
+            errs.append(line)
+    p.wait()
+    if p.returncode == 0:
+        draw(label, 100.0, "selesai")
+        print()
+        return True
+    print()
+    print("\n".join(errs[-8:]))
+    return False
+
+
+def run_yt(label, args, outtmpl, url, tries=3):
+    for n in range(1, tries + 1):
+        if run_yt_once(label, args, outtmpl, url):
+            return True
+        if n < tries:
+            print(f"  gagal, coba lagi ({n + 1}/{tries})...")
+            time.sleep(2)
+    return False
+
+
+def run_ffmpeg(label, cmd, cwd, total):
+    full = [cmd[0], "-hide_banner", "-loglevel", "error", "-y",
+            "-progress", "pipe:1", "-nostats"] + cmd[1:]
+    p = subprocess.Popen(full, cwd=cwd, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True)
+    errs = []
+    speed = ""
+    for line in p.stdout:
+        line = line.strip()
+        if "=" not in line:
+            if line:
+                errs.append(line)
+            continue
+        k, v = line.split("=", 1)
+        if k == "speed":
+            speed = v.strip()
+        elif k in ("out_time_us", "out_time_ms") and total:
+            try:
+                t = int(v) / 1e6
+            except ValueError:
+                continue
+            pct = max(0.0, min(100.0, t / total * 100))
+            eta = "--:--"
+            m = re.match(r"([\d.]+)x", speed)
+            if m and float(m.group(1)) > 0:
+                eta = fmt_eta((total - t) / float(m.group(1)))
+            draw(label, pct, f"{speed or '-'} ETA {eta}")
+    p.wait()
+    if p.returncode == 0:
+        draw(label, 100.0, "selesai")
+        print()
+        return True
+    print()
+    print("\n".join(errs[-8:]))
+    return False
+
+
+# ---------- Audio ----------
+
+def audio_formats(formats):
+    return [f for f in formats
+            if f.get("acodec") not in (None, "none")
+            and f.get("vcodec") in (None, "none")
+            and "drc" not in str(f.get("format_id", ""))]
+
+
+def abr_of(f):
+    return num(f.get("abr")) or num(f.get("tbr")) or 0
+
+
+def khz(asr):
+    asr = num(asr)
+    return f"{asr / 1000:g}kHz" if asr else "?kHz"
+
+
+def native_audio(formats):
+    best = {}
+    for f in audio_formats(formats):
+        ext = f.get("ext")
+        if ext not in ("webm", "m4a"):
+            continue
+        key = (ext, round(abr_of(f)), f.get("asr"))
+        note = (f.get("format_note") or "").lower()
+        score = (("original" in note or "default" in note), abr_of(f))
+        if key not in best or score > best[key][0]:
+            best[key] = (score, f)
+    items = [v[1] for v in best.values()]
+    items.sort(key=lambda f: (f["ext"] != "webm", -abr_of(f)))
+    return items
+
+
+def build_audio_options(formats, duration):
+    cand = audio_formats(formats)
+    if not cand:
+        die("Tidak ada format audio yang tersedia.")
+    src = max(cand, key=abr_of)
+    src_abr = abr_of(src)
+    src_asr = num(src.get("asr")) or 44100
+    ch = int(num(src.get("audio_channels")) or 2)
+    opts = []
+
+    for f in native_audio(formats):
+        opts.append({"label": f"{f['ext'].upper()} (~{abr_of(f):.0f} kbps, {khz(f.get('asr'))})",
+                     "kind": "native", "fmt": f, "est": fsize(f, duration)})
+
+    for k in (320, 192, 128):
+        opts.append({"label": f"MP3 (~{k} kbps, 44.1kHz)", "kind": "mp3", "kbps": k,
+                     "src": src, "est": k * 1000 / 8 * duration if duration else None})
+
+    opus_copy = str(src.get("acodec", "")).startswith("opus")
+    opus_k = src_abr if (opus_copy and src_abr) else 160
+    opts.append({"label": f"OPUS (~{opus_k:.0f} kbps, 48kHz)", "kind": "opus", "copy": opus_copy,
+                 "src": src, "est": opus_k * 1000 / 8 * duration if duration else None})
+
+    opts.append({"label": f"FLAC (lossless, {khz(src_asr)})", "kind": "flac", "src": src,
+                 "est": src_asr * ch * 2 * duration * 0.6 if duration else None})
+    opts.append({"label": f"WAV (PCM 16-bit, {khz(src_asr)})", "kind": "wav", "src": src,
+                 "est": src_asr * ch * 2 * duration if duration else None})
+    return opts
+
+
+def convert_cmd(opt, audio, out):
+    k = opt["kind"]
+    base = ["ffmpeg", "-i", audio, "-vn"]
+    if k == "mp3":
+        return base + ["-c:a", "libmp3lame", "-b:a", f"{opt['kbps']}k", "-ar", "44100", out]
+    if k == "opus":
+        if opt["copy"]:
+            return base + ["-c:a", "copy", out]
+        return base + ["-c:a", "libopus", "-b:a", "160k", out]
+    if k == "flac":
+        return base + ["-c:a", "flac", out]
+    return base + ["-c:a", "pcm_s16le", out]
+
+
+# ---------- Uninstall ----------
+
+def dir_stats(path):
+    n, size = 0, 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            n += 1
+            try:
+                size += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return n, size
+
+
+def do_remove():
+    header()
+    home = os.path.realpath(os.path.expanduser("~"))
+    prefix = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
+    cmds = []
+    for p in (os.path.abspath(__file__), os.path.join(prefix, "bin", "ytcloud")):
+        if os.path.lexists(p) and p not in cmds:
+            cmds.append(p)
+
+    record = os.path.join(home, ".ytcloud")
+    repo = None
+    if os.path.isfile(record):
+        try:
+            with open(record, encoding="utf-8") as fh:
+                raw = fh.read().strip()
+        except OSError:
+            raw = ""
+        cand = os.path.realpath(raw) if raw else ""
+        if (cand.startswith(home + os.sep) and os.path.basename(cand) == "ytcloud-cli"
+                and os.path.isfile(os.path.join(cand, "install.sh"))):
+            repo = cand
+
+    print(paint("This will remove YT Cloud CLI:", "1;33"))
+    for p in cmds:
+        print(f"  - {p}")
+    if repo:
+        print(f"  - {repo}  (installer folder)")
+    if os.path.isfile(record):
+        print(f"  - {record}  (install record)")
+    print()
+    print(paint("Python, FFmpeg and yt-dlp are NOT removed (other tools may use them).", "2"))
+    print()
+    if not ask_yn("Continue? (y/n) : "):
+        print("Cancelled.")
+        return
+
+    del_dl = False
+    if os.path.isdir(OUT_DIR):
+        n, size = dir_stats(OUT_DIR)
+        if n:
+            del_dl = ask_yn(f"Also delete your downloaded files in {OUT_DIR} "
+                            f"({n} files, {fmt_size(size)})? (y/n) : ")
+        else:
+            del_dl = True
+    print()
+
+    def drop(path, is_dir=False):
+        if not os.path.lexists(path):
+            return
+        try:
+            if is_dir:
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            print(paint(f"  ✔ removed {path}", "32"))
+        except OSError as e:
+            print(paint(f"  ✖ could not remove {path}: {e}", "31"))
+
+    if del_dl:
+        drop(OUT_DIR, True)
+    if repo:
+        drop(repo, True)
+    if os.path.isfile(record):
+        drop(record)
+    for p in cmds:
+        drop(p)
+    print()
+    print(paint("✔ YT Cloud CLI has been removed.", "32"))
+    print("If the shell still finds 'ytcloud', run: hash -r")
+
+
+def main():
+    mode, url = parse_args(sys.argv[1:])
+    header()
+
+    for b in ("yt-dlp", "ffmpeg"):
+        if not shutil.which(b):
+            die(f"{b} belum terinstall.")
+
+    if not url:
+        url = ask_url()
+        print()
+
+    sys.stdout.write(paint("Mengambil info video...", "2"))
+    sys.stdout.flush()
+    r = subprocess.run(["yt-dlp", "-J", "--no-playlist", url],
+                       capture_output=True, text=True)
+    sys.stdout.write("\r" + CLR)
+    if r.returncode != 0:
+        die("Gagal ambil info video:\n" + r.stderr.strip())
+    info = json.loads(r.stdout)
+    title = info.get("title", "video")
+    duration = info.get("duration") or 0
+    formats = info.get("formats", [])
+
+    print(f"{paint('URL', '2')}      : {url}")
+    print(f"{paint('Title', '2')}    : {title}")
+    print(f"{paint('Duration', '2')} : {fmt_dur(duration)}")
+    print()
+
+    if mode is None:
+        heading("Select Format")
+        print("  1) Format Videos")
+        print("  2) Format Audio")
+        mode = ask(range(1, 3))
+        print()
+
+    if mode == 1:
+        best = {}
+        for f in formats:
+            w, h = f.get("width"), f.get("height")
+            if not w or not h or f.get("vcodec") in (None, "none"):
+                continue
+            label = min(w, h)
+            score = (f.get("acodec") in (None, "none"), f.get("tbr") or 0)
+            if label not in best or score > best[label][0]:
+                best[label] = (score, f)
+        heights = sorted(best, reverse=True)
+        if not heights:
+            die("Tidak ada resolusi video yang tersedia.")
+        heading("Select Videos Quality")
+        for i, h in enumerate(heights, 1):
+            print(f"  {i}) {h}p")
+        height = heights[ask(range(1, len(heights) + 1)) - 1]
+        vfmt = best[height][1]
+        fmt_id = vfmt["format_id"]
+        print()
+
+        audios = audio_formats(formats)
+        afmt = max(audios, key=abr_of) if audios else None
+        vs = fsize(vfmt, duration)
+        as_ = fsize(afmt, duration) if afmt else None
+        est = (vs or 0) + (as_ or 0)
+    else:
+        opts = build_audio_options(formats, duration)
+        heading("Select Audio Format")
+        for i, o in enumerate(opts, 1):
+            print(f"  {i}) {o['label']}")
+        opt = opts[ask(range(1, len(opts) + 1)) - 1]
+        print()
+        est = opt["est"] or 0
+
+    est_txt = f"~{fmt_size(est)}" if est else "unknown"
+    what = "video" if mode == 1 else "audio"
+    if not ask_yn(f"Estimated {what} size : {est_txt}, are you sure you want to "
+                  f"continue downloading? (y/n) : "):
+        die("Dibatalkan.")
+    print()
+
+    try:
+        os.makedirs(OUT_DIR, exist_ok=True)
+    except OSError:
+        die("Tidak bisa akses /sdcard. Jalankan: termux-setup-storage")
+
+    safe = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', "_", title).strip()
+    safe = trim_bytes(safe, 200).strip(" .") or "video"
+
+    tmp = tempfile.mkdtemp(prefix="ytdl_")
+    try:
+        if mode == 1:
+            if not run_yt(f"Videos {height}p", ["-f", fmt_id],
+                          os.path.join(tmp, "video.%(ext)s"), url):
+                die("Download video gagal.")
+
+            if not run_yt("Audio", ["-f", "bestaudio"],
+                          os.path.join(tmp, "audio.%(ext)s"), url):
+                die("Download audio gagal.")
+
+            video = [p for p in glob.glob(os.path.join(tmp, "video.*"))
+                     if not p.endswith((".part", ".ytdl"))][0]
+            audio = [p for p in glob.glob(os.path.join(tmp, "audio.*"))
+                     if not p.endswith((".part", ".ytdl"))][0]
+
+            out_name = f"{safe}.mp4"
+            out_tmp = os.path.join(tmp, "out.mp4")
+            cmd = ["ffmpeg", "-i", video, "-i", audio,
+                   "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", out_tmp]
+            if not run_ffmpeg("Merge", cmd, tmp, duration):
+                die("Merge ffmpeg gagal.")
+        else:
+            dl = opt["fmt"] if opt["kind"] == "native" else opt["src"]
+            if not run_yt("Audio", ["-f", dl["format_id"]],
+                          os.path.join(tmp, "audio.%(ext)s"), url):
+                die("Download audio gagal.")
+
+            audio = [p for p in glob.glob(os.path.join(tmp, "audio.*"))
+                     if not p.endswith((".part", ".ytdl"))][0]
+
+            if opt["kind"] == "native":
+                ext = os.path.splitext(audio)[1].lstrip(".") or dl.get("ext", "m4a")
+                out_tmp = audio
+            else:
+                ext = opt["kind"]
+                out_tmp = os.path.join(tmp, "out." + ext)
+                if not run_ffmpeg("Convert", convert_cmd(opt, audio, out_tmp), tmp, duration):
+                    die("Konversi ffmpeg gagal.")
+            out_name = f"{safe}.{ext}"
+
+        shutil.move(out_tmp, os.path.join(OUT_DIR, out_name))
+        print()
+        print(paint(f"✔ Selesai: {OUT_DIR}/{out_name}", "32"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()
+YTCLOUD_EOF
+[ -s "$BIN" ] || die "Could not write $BIN"
+chmod 755 "$BIN"
+python3 -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$BIN" \
+  || die "Generated ytcloud failed the syntax check."
+printf '%s\n' "$SRC_DIR" > "$RECORD"
+hash -r 2>/dev/null
+FOUND="$(command -v ytcloud 2>/dev/null)"
+if [ -n "$FOUND" ] && [ "$FOUND" != "$BIN" ]; then
+  warn "Another 'ytcloud' comes first in PATH: $FOUND"
+  warn "Delete it so the new one is used:  rm $FOUND"
+fi
+ok "Installed: $BIN ($("$BIN" --version))"
+
+printf '\n%s✔ Done!%s Run:  %sytcloud%s\n' "$C_G" "$C_0" "$C_B" "$C_0"
+printf '%sHelp: ytcloud --help   |   Uninstall: ytcloud --remove%s\n' "$C_D" "$C_0"
+printf '%sIf "command not found" appears, run: hash -r%s\n\n' "$C_D" "$C_0"
