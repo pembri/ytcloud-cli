@@ -133,7 +133,7 @@ def print_help():
   --videos      Go straight to video download, then pick a resolution
   --audio       Go straight to audio download, then pick an audio format
   --version     Show the version number
-  --remove      Uninstall YT Cloud CLI (asks before deleting anything)
+  --remove      Uninstall YT Cloud CLI (your downloaded files are always kept)
   --help, -h    Show this help message
 
 {paint('NOTES', '1;33')}
@@ -429,18 +429,6 @@ def convert_cmd(opt, audio, out):
 
 # ---------- Uninstall ----------
 
-def dir_stats(path):
-    n, size = 0, 0
-    for root, _, files in os.walk(path):
-        for f in files:
-            n += 1
-            try:
-                size += os.path.getsize(os.path.join(root, f))
-            except OSError:
-                pass
-    return n, size
-
-
 def do_remove():
     header()
     home = os.path.realpath(os.path.expanduser("~"))
@@ -477,6 +465,7 @@ def do_remove():
     if os.path.isdir(cache):
         print(f"  - {cache}  (yt-dlp cache)")
     print()
+    print(paint(f"Your downloaded files in {OUT_DIR} are never touched.", "2"))
     if tracked:
         names = ", ".join(x.split(":", 1)[1] for x in tracked)
         print(paint(f"Packages added by the installer ({names}) are asked about separately.", "2"))
@@ -487,14 +476,6 @@ def do_remove():
         print("Cancelled.")
         return
 
-    del_dl = False
-    if os.path.isdir(OUT_DIR):
-        n, size = dir_stats(OUT_DIR)
-        if n:
-            del_dl = ask_yn(f"Also delete your downloaded files in {OUT_DIR} "
-                            f"({n} files, {fmt_size(size)})? (y/n) : ")
-        else:
-            del_dl = True
     del_pk = False
     if tracked:
         names = ", ".join(x.split(":", 1)[1] for x in tracked)
@@ -513,8 +494,12 @@ def do_remove():
         except OSError as e:
             print(paint(f"  ✖ could not remove {path}: {e}", "31"))
 
-    if del_dl:
-        drop(OUT_DIR, True)
+    if os.path.isdir(OUT_DIR):
+        try:
+            os.rmdir(OUT_DIR)
+            print(paint(f"  ✔ removed empty folder {OUT_DIR}", "32"))
+        except OSError:
+            print(paint(f"  ✔ kept your downloads in {OUT_DIR}", "32"))
     if repo:
         drop(repo, True)
     if os.path.isfile(record):
