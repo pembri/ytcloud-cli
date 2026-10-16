@@ -1,139 +1,141 @@
-# Media Downloader
+# YT Cloud CLI
 
-A CLI tool to download videos/music from YouTube and videos from TikTok, right from your terminal. Supports **Termux (Android)** and **Debian/Ubuntu**.
+**YT Cloud CLI by Rira Project** is a YouTube downloader for your terminal. Download videos in any resolution or audio in many formats, one link or many at once. Built for **Termux (Android)**.
 
 ## Features
 
-- YouTube Video Downloader (MP4)
-- YouTube Music Downloader (MP3)
-- TikTok Video Downloader
-- Auto-saves files into categorized folders
-- Interactive, colorized menu UI
-- Universal installer (auto-detects Termux vs Debian/Ubuntu)
+- Download YouTube **videos** as MP4 in any available resolution (no re-encoding, so it is fast and keeps the original quality)
+- Download **audio** as WEBM or M4A (original streams), or as MP3, OPUS, FLAC and WAV (converted automatically with FFmpeg)
+- **Multi-download**: give several links and get them all in one run
+- Shortcut commands: `--videos` and `--audio` skip the format menu
+- Size estimate and confirmation before every download
+- Automatic retry when YouTube temporarily refuses a download (HTTP 403)
+- Videos and audio are saved in separate folders
+- Colorized, easy-to-read terminal UI
+- Single-file installer and a clean uninstaller that never touches your downloads
 
 ## Requirements
 
-- Termux (Android) **or** Debian/Ubuntu
+- Termux (Android)
 - Internet connection
-- Python 3 (automatically installed by the installer if missing)
+- `git` (only to clone this repo): `pkg install git`
+
+Everything else (Python, FFmpeg, yt-dlp) is installed by the installer.
 
 ## Installation
 
-Clone this repo and run the installer:
-
 ```bash
-git clone https://github.com/pembri/media-downloader && cd media-downloader && chmod +x install.sh && ./install.sh
+pkg install -y git && git clone https://github.com/pembri/ytcloud-cli && cd ytcloud-cli && chmod +x install.sh && ./install.sh
 ```
 
 The installer will automatically:
-1. Detect your environment (Termux or Debian/Ubuntu)
-2. Install system dependencies (`python`, `ffmpeg`, `pip`)
-3. Install Python dependencies (`yt-dlp`, `requests`)
-4. Generate all supporting files inside the `media-downloader/` folder
-5. Install the `media-downloader` command so it can be run from anywhere
+1. Check that you are running Termux
+2. Install `python` and `ffmpeg`, and check the MP3 and OPUS encoders
+3. Install `yt-dlp`
+4. Check storage access (tap **Allow** when Android asks for permission)
+5. Generate the `ytcloud` command and install it so it can be run from anywhere
 
-> On Termux, you'll be asked to grant storage permission — tap **Allow** when prompted.
+If you see `command not found` after installing, run `exec $SHELL` and try again.
 
 ## Usage
 
-Once installed, run it from any terminal session:
+| Command | What it does |
+|---|---|
+| `ytcloud` | Interactive mode, asks for the link |
+| `ytcloud "URL"` | Start with a link, then choose video or audio |
+| `ytcloud "URL" "URL" "URL"` | Download several links at once |
+| `ytcloud --videos "URL"` | Download video directly (skips the format menu) |
+| `ytcloud --audio "URL"` | Download audio directly (skips the format menu) |
+| `ytcloud --version` | Show the version number |
+| `ytcloud --help` | Show the help page |
+| `ytcloud --remove` | Uninstall YT Cloud CLI |
 
-```bash
-media-downloader
+Interactive mode looks like this:
+
 ```
+╔══════════════════════════════════╗
+║   YT Cloud CLI by Rira Project   ║
+╚══════════════════════════════════╝
 
-You'll see the following menu:
-
-```
-+-----------------------------------------------------+
-|            MEDIA-DOWNLOADER                          |
-|-------------------------------------------------------
-|  YouTube Video / Music  -  TikTok                    |
-+-----------------------------------------------------+
-
-  Auto-saved to: /sdcard/Media-Downloader
-
-  ------------------------------------------------------
-  1) YouTube Video Downloader
-  2) YouTube Music Downloader (MP3)
-  3) TikTok Video Downloader
-  0) Exit
-  ------------------------------------------------------
-Select menu [0-3]:
+Input URL :
 ```
 
 Steps:
-1. Choose a feature (1-3)
-2. Paste the video URL
-3. Press Enter — the download starts automatically
-4. The file is saved to its matching category folder
+1. Paste one or more links (separated by spaces)
+2. Choose **Format Videos** or **Format Audio**
+3. Choose the resolution or audio format
+4. Check the estimated size and confirm with `y`
+5. The files are saved to their matching folder
+
+### Downloading several links
+
+- Separate the links with spaces, with or without quotes: `ytcloud "URL" "URL"` or `ytcloud URL URL`
+- The same works at the `Input URL :` prompt (all links on one line)
+- One format choice is applied to every link
+- If a video does not have the chosen resolution, the closest lower one is used
+- If an original audio stream (WEBM or M4A) is not available for a link, that link is skipped
+- One failed link never stops the others, and a summary is shown at the end
+
+### Audio formats
+
+| Format | Type | Notes |
+|---|---|---|
+| WEBM | Original stream | No conversion, available qualities depend on the video |
+| M4A | Original stream | No conversion, available qualities depend on the video |
+| MP3 (320 / 192 / 128 kbps) | Converted | Converted with FFmpeg |
+| OPUS | Repacked or converted | No quality loss when the source is already Opus |
+| FLAC | Converted, lossless | Large files |
+| WAV | Converted, PCM 16-bit | Large files |
 
 ## Download Location
 
-| Environment | Path |
-|---|---|
-| Termux | `/sdcard/Media-Downloader/` |
-| Debian/Ubuntu | `~/Media-Downloader/` |
+```
+/sdcard/Download/ytcloud/
+├── Videos/
+└── Audio/
+```
 
-Subfolders by category:
-```
-Media-Downloader/
-├── YouTube-Video/
-├── YouTube-Musik/
-└── TikTok/
-```
+The folders are created automatically on the first download.
 
 ## Repo Structure
 
-Before installation, the repo only contains:
 ```
-media-downloader/
-└── install.sh
+ytcloud-cli/
+├── install.sh
+└── README.md
 ```
 
-After running `install.sh`, the following files are generated in the same folder:
-```
-media-downloader/
-├── install.sh
-├── uninstall.sh
-├── requirements.txt
-├── common.py
-├── youtube.py
-└── tiktok.py
-```
+The whole `ytcloud` program is embedded inside `install.sh`. The installer generates the command and places it in Termux's `bin` folder.
 
 ## Uninstall
 
-To remove the command and all supporting files:
-
 ```bash
-bash media-downloader/uninstall.sh
+ytcloud --remove
 ```
 
 This will remove:
-- The `media-downloader` command from bin
-- All supporting files (`.py`, `requirements.txt`, etc.)
+- The `ytcloud` command
+- The cloned `ytcloud-cli` folder and the install record
+- The yt-dlp cache
+- Packages that the installer added itself (it asks first, and only for packages that were not on your device before)
 
-The downloaded media folder (`Media-Downloader/`) is **not** deleted automatically. To remove it manually:
-
-```bash
-rm -rf /sdcard/Media-Downloader   # Termux
-rm -rf ~/Media-Downloader         # Debian/Ubuntu
-```
+Your downloaded files in `/sdcard/Download/ytcloud` are **never** deleted. The folder is only removed when it is completely empty.
 
 ## Updating
 
-To update to the latest version, simply re-run the installer (safely overwrites old files):
+Re-run the installer (it safely overwrites the old command and also updates yt-dlp):
 
 ```bash
-cd media-downloader && git pull && chmod +x install.sh && ./install.sh
+cd ytcloud-cli && git pull && ./install.sh
 ```
 
 ## Notes
 
+- Put links in quotes, or use the `Input URL :` prompt. Links containing `&` or `?` can be misread by the terminal.
+- Only the single video in a link is downloaded, not whole playlists.
 - Private or login-required content cannot be downloaded.
-- Some content may be restricted by the source platform (e.g. TikTok "sensitive" content) and will still require authentication.
-- This tool uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) as its core download engine.
+- If downloads keep failing with `HTTP 403`, update yt-dlp: `pip install -U yt-dlp`
+- This tool uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org/) as its core engines.
 
 ## License
 

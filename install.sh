@@ -79,7 +79,7 @@ ok "Downloads folder ready: $OUT_DIR"
 
 # 5. Generate the ytcloud command
 step 5 "Generating the ytcloud command"
-cat > "$BIN" <<'YTCLOUD_EOF'
+cat > "$BIN.new" <<'YTCLOUD_EOF'
 #!/usr/bin/env python3
 import glob
 import json
@@ -125,6 +125,7 @@ def print_help():
 {paint('USAGE', '1;33')}
   ytcloud                    Start in interactive mode (it asks for the URL)
   ytcloud "URL"              Start with a URL, then choose video or audio
+  ytcloud "URL" "URL" ...    Download several links in one go (also with --videos / --audio)
   ytcloud --videos "URL"     Download video directly (skips the format menu)
   ytcloud --audio "URL"      Download audio directly (skips the format menu)
   ytcloud --remove           Uninstall YT Cloud CLI completely
@@ -139,11 +140,14 @@ def print_help():
 {paint('NOTES', '1;33')}
   - Always put the URL in quotes. Links often contain ? and & which the
     terminal may misread.
+  - You can give several links at once, separated by spaces. The same works
+    at the "Input URL :" prompt (one line). One format choice is applied to
+    every link.
   - Videos are saved as MP4. They are merged without re-encoding, so it is
     fast and keeps the original quality.
   - Audio: WEBM and M4A are the original streams from YouTube. MP3, OPUS,
     FLAC and WAV are converted automatically with FFmpeg.
-  - Files are saved to {OUT_DIR}
+  - Videos are saved to {OUT_DIR}/Videos and audio to {OUT_DIR}/Audio.
 
 {paint('EXAMPLES', '1;33')}
   ytcloud
@@ -159,7 +163,7 @@ def bad_usage(msg):
 
 
 def parse_args(argv):
-    mode, url = None, None
+    mode, urls = None, []
     for a in argv:
         if a in ("-h", "--help"):
             header()
@@ -178,11 +182,9 @@ def parse_args(argv):
             mode = m
         elif a.startswith("-") and len(a) > 1:
             bad_usage(f"Unknown option: {a}")
-        elif url is None:
-            url = a
         else:
-            bad_usage("Only one URL is allowed. Put the URL in quotes.")
-    return mode, url
+            urls.extend(a.split())
+    return mode, urls
 
 
 def ask(valid):
@@ -197,15 +199,17 @@ def ask(valid):
         print("Input tidak valid.")
 
 
-def ask_url():
+def ask_urls():
     while True:
         try:
-            u = input("Input URL : ").strip().strip("\"'")
+            raw = input("Input URL : ")
         except (EOFError, KeyboardInterrupt):
             print()
             sys.exit(130)
-        if u:
-            return u
+        urls = [t.strip("\"',") for t in raw.split()]
+        urls = [t for t in urls if t]
+        if urls:
+            return urls
         print("URL tidak boleh kosong.")
 
 
@@ -386,7 +390,7 @@ def native_audio(formats):
 def build_audio_options(formats, duration):
     cand = audio_formats(formats)
     if not cand:
-        die("Tidak ada format audio yang tersedia.")
+        return []
     src = max(cand, key=abr_of)
     src_abr = abr_of(src)
     src_asr = num(src.get("asr")) or 44100
@@ -495,6 +499,11 @@ def do_remove():
             print(paint(f"  ✖ could not remove {path}: {e}", "31"))
 
     if os.path.isdir(OUT_DIR):
+        for sub in ("Videos", "Audio"):
+            try:
+                os.rmdir(os.path.join(OUT_DIR, sub))
+            except OSError:
+                pass
         try:
             os.rmdir(OUT_DIR)
             print(paint(f"  ✔ removed empty folder {OUT_DIR}", "32"))
@@ -527,33 +536,177 @@ def do_remove():
     print("If the shell still finds 'ytcloud', run: exec $SHELL")
 
 
+class ItemError(Exception):
+    pass
+
+
+def fetch_info(url):
+    r = subprocess.run(["yt-dlp", "-J", "--no-playlist", url],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        lines = r.stderr.strip().splitlines()
+        raise ItemError(lines[-1] if lines else "Gagal ambil info video.")
+    try:
+        info = json.loads(r.stdout)
+    except ValueError:
+        raise ItemError("Info video tidak bisa dibaca.")
+    return {"url": url, "title": info.get("title", "video"),
+            "duration": info.get("duration") or 0,
+            "formats": info.get("formats", [])}
+
+
+def video_best(formats):
+    best = {}
+    for f in formats:
+        w, h = f.get("width"), f.get("height")
+        if not w or not h or f.get("vcodec") in (None, "none"):
+            continue
+        label = min(w, h)
+        score = (f.get("acodec") in (None, "none"), f.get("tbr") or 0)
+        if label not in best or score > best[label][0]:
+            best[label] = (score, f)
+    return {k: v[1] for k, v in best.items()}
+
+
+def pick_height(best, wanted):
+    lower = [h for h in best if h <= wanted]
+    return max(lower) if lower else min(best)
+
+
+def video_plan(item, wanted):
+    best = video_best(item["formats"])
+    if not best:
+        return None
+    h = pick_height(best, wanted)
+    vfmt = best[h]
+    audios = audio_formats(item["formats"])
+    afmt = max(audios, key=abr_of) if audios else None
+    vs = fsize(vfmt, item["duration"])
+    as_ = fsize(afmt, item["duration"]) if afmt else None
+    return {"height": h, "fmt": vfmt, "est": (vs or 0) + (as_ or 0)}
+
+
+def match_option(tpl, ref_opts, item_opts):
+    if tpl["kind"] != "native":
+        for o in item_opts:
+            if o["kind"] == tpl["kind"] and o.get("kbps") == tpl.get("kbps"):
+                return o
+        return None
+    ext = tpl["fmt"]["ext"]
+    ref_same = [o for o in ref_opts if o["kind"] == "native" and o["fmt"]["ext"] == ext]
+    rank = ref_same.index(tpl)
+    item_same = [o for o in item_opts if o["kind"] == "native" and o["fmt"]["ext"] == ext]
+    if not item_same:
+        return None
+    return item_same[min(rank, len(item_same) - 1)]
+
+
+def first_file(tmp, pattern):
+    found = [p for p in glob.glob(os.path.join(tmp, pattern))
+             if not p.endswith((".part", ".ytdl"))]
+    if not found:
+        raise ItemError("File hasil unduhan tidak ditemukan.")
+    return found[0]
+
+
+def safe_title(title):
+    safe = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', "_", title).strip()
+    return trim_bytes(safe, 200).strip(" .") or "video"
+
+
+def unique_base(base, used):
+    name, n = base, 2
+    while name in used:
+        name = f"{base} ({n})"
+        n += 1
+    used.add(name)
+    return name
+
+
+def download_one(item, mode, plan, base):
+    url, duration = item["url"], item["duration"]
+    tmp = tempfile.mkdtemp(prefix="ytdl_")
+    try:
+        if mode == 1:
+            if not run_yt(f"Videos {plan['height']}p", ["-f", plan["fmt"]["format_id"]],
+                          os.path.join(tmp, "video.%(ext)s"), url):
+                raise ItemError("Download video gagal.")
+            if not run_yt("Audio", ["-f", "bestaudio"],
+                          os.path.join(tmp, "audio.%(ext)s"), url):
+                raise ItemError("Download audio gagal.")
+            video = first_file(tmp, "video.*")
+            audio = first_file(tmp, "audio.*")
+            ext = "mp4"
+            out_tmp = os.path.join(tmp, "out.mp4")
+            cmd = ["ffmpeg", "-i", video, "-i", audio,
+                   "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", out_tmp]
+            if not run_ffmpeg("Merge", cmd, tmp, duration):
+                raise ItemError("Merge ffmpeg gagal.")
+        else:
+            dl = plan["fmt"] if plan["kind"] == "native" else plan["src"]
+            if not run_yt("Audio", ["-f", dl["format_id"]],
+                          os.path.join(tmp, "audio.%(ext)s"), url):
+                raise ItemError("Download audio gagal.")
+            audio = first_file(tmp, "audio.*")
+            if plan["kind"] == "native":
+                ext = os.path.splitext(audio)[1].lstrip(".") or dl.get("ext", "m4a")
+                out_tmp = audio
+            else:
+                ext = plan["kind"]
+                out_tmp = os.path.join(tmp, "out." + ext)
+                if not run_ffmpeg("Convert", convert_cmd(plan, audio, out_tmp), tmp, duration):
+                    raise ItemError("Konversi ffmpeg gagal.")
+        out_dir = os.path.join(OUT_DIR, "Videos" if mode == 1 else "Audio")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except OSError:
+            raise ItemError(f"Tidak bisa membuat folder {out_dir}")
+        dest = os.path.join(out_dir, f"{base}.{ext}")
+        shutil.move(out_tmp, dest)
+        return dest
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
-    mode, url = parse_args(sys.argv[1:])
+    mode, urls = parse_args(sys.argv[1:])
     header()
 
     for b in ("yt-dlp", "ffmpeg"):
         if not shutil.which(b):
             die(f"{b} belum terinstall.")
 
-    if not url:
-        url = ask_url()
+    if not urls:
+        urls = ask_urls()
         print()
+    seen = set()
+    urls = [u for u in urls if not (u in seen or seen.add(u))]
+    total_n = len(urls)
 
-    sys.stdout.write(paint("Mengambil info video...", "2"))
+    items, failed = [], []
+    for i, u in enumerate(urls, 1):
+        sys.stdout.write(paint(f"Mengambil info video ({i}/{total_n})...", "2"))
+        sys.stdout.flush()
+        try:
+            items.append(fetch_info(u))
+        except ItemError as e:
+            failed.append((u, str(e)))
+        sys.stdout.write("\r" + CLR)
     sys.stdout.flush()
-    r = subprocess.run(["yt-dlp", "-J", "--no-playlist", url],
-                       capture_output=True, text=True)
-    sys.stdout.write("\r" + CLR)
-    if r.returncode != 0:
-        die("Gagal ambil info video:\n" + r.stderr.strip())
-    info = json.loads(r.stdout)
-    title = info.get("title", "video")
-    duration = info.get("duration") or 0
-    formats = info.get("formats", [])
+    for label, why in failed:
+        print(paint(f"✖ {label}: {why}", "31"))
+    if not items:
+        die("Tidak ada URL yang bisa diproses.")
 
-    print(f"{paint('URL', '2')}      : {url}")
-    print(f"{paint('Title', '2')}    : {title}")
-    print(f"{paint('Duration', '2')} : {fmt_dur(duration)}")
+    if len(items) == 1:
+        it = items[0]
+        print(f"{paint('URL', '2')}      : {it['url']}")
+        print(f"{paint('Title', '2')}    : {it['title']}")
+        print(f"{paint('Duration', '2')} : {fmt_dur(it['duration'])}")
+    else:
+        print(paint(f"Ditemukan {len(items)} video:", "1"))
+        for i, it in enumerate(items, 1):
+            print(f"  {i}) {it['title']}  [{fmt_dur(it['duration'])}]")
     print()
 
     if mode is None:
@@ -564,43 +717,59 @@ def main():
         print()
 
     if mode == 1:
-        best = {}
-        for f in formats:
-            w, h = f.get("width"), f.get("height")
-            if not w or not h or f.get("vcodec") in (None, "none"):
-                continue
-            label = min(w, h)
-            score = (f.get("acodec") in (None, "none"), f.get("tbr") or 0)
-            if label not in best or score > best[label][0]:
-                best[label] = (score, f)
-        heights = sorted(best, reverse=True)
+        heights = sorted({h for it in items for h in video_best(it["formats"])}, reverse=True)
         if not heights:
             die("Tidak ada resolusi video yang tersedia.")
         heading("Select Videos Quality")
         for i, h in enumerate(heights, 1):
             print(f"  {i}) {h}p")
-        height = heights[ask(range(1, len(heights) + 1)) - 1]
-        vfmt = best[height][1]
-        fmt_id = vfmt["format_id"]
+        wanted = heights[ask(range(1, len(heights) + 1)) - 1]
         print()
-
-        audios = audio_formats(formats)
-        afmt = max(audios, key=abr_of) if audios else None
-        vs = fsize(vfmt, duration)
-        as_ = fsize(afmt, duration) if afmt else None
-        est = (vs or 0) + (as_ or 0)
+        plans = [video_plan(it, wanted) for it in items]
     else:
-        opts = build_audio_options(formats, duration)
+        refs = [build_audio_options(it["formats"], it["duration"]) for it in items]
+        ref_opts = max(refs, key=len)
+        if not ref_opts:
+            die("Tidak ada format audio yang tersedia.")
         heading("Select Audio Format")
-        for i, o in enumerate(opts, 1):
+        for i, o in enumerate(ref_opts, 1):
             print(f"  {i}) {o['label']}")
-        opt = opts[ask(range(1, len(opts) + 1)) - 1]
+        tpl = ref_opts[ask(range(1, len(ref_opts) + 1)) - 1]
         print()
-        est = opt["est"] or 0
+        plans = [match_option(tpl, ref_opts, o) if o else None for o in refs]
+
+    est = 0
+    todo = []
+    for it, pl in zip(items, plans):
+        if pl is None:
+            failed.append((it["title"], "format yang dipilih tidak tersedia"))
+        else:
+            todo.append((it, pl))
+            est += pl["est"] or 0
+    if not todo:
+        die("Tidak ada item yang bisa diunduh dengan pilihan itu.")
+
+    if len(items) > 1:
+        heading("Plan")
+        for it, pl in zip(items, plans):
+            if pl is None:
+                print(paint(f"  - {it['title']}: not available, skipped", "31"))
+                continue
+            if mode == 1:
+                what_pl = f"{pl['height']}p"
+                if pl["height"] != wanted:
+                    what_pl += f" ({wanted}p not available)"
+            else:
+                what_pl = pl["label"]
+            size = f"~{fmt_size(pl['est'])}" if pl["est"] else "unknown"
+            print(f"  - {it['title']}: {what_pl}, {size}")
+        print()
 
     est_txt = f"~{fmt_size(est)}" if est else "unknown"
     what = "video" if mode == 1 else "audio"
-    if not ask_yn(f"Estimated {what} size : {est_txt}, are you sure you want to "
+    label_sz = (f"Estimated {what} size" if len(todo) == 1
+                else f"Estimated total size ({len(todo)} items)")
+    if not ask_yn(f"{label_sz} : {est_txt}, are you sure you want to "
                   f"continue downloading? (y/n) : "):
         die("Dibatalkan.")
     print()
@@ -610,64 +779,42 @@ def main():
     except OSError:
         die("Tidak bisa akses /sdcard. Jalankan: termux-setup-storage")
 
-    safe = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', "_", title).strip()
-    safe = trim_bytes(safe, 200).strip(" .") or "video"
-
-    tmp = tempfile.mkdtemp(prefix="ytdl_")
+    used = set()
+    done = []
     try:
-        if mode == 1:
-            if not run_yt(f"Videos {height}p", ["-f", fmt_id],
-                          os.path.join(tmp, "video.%(ext)s"), url):
-                die("Download video gagal.")
-
-            if not run_yt("Audio", ["-f", "bestaudio"],
-                          os.path.join(tmp, "audio.%(ext)s"), url):
-                die("Download audio gagal.")
-
-            video = [p for p in glob.glob(os.path.join(tmp, "video.*"))
-                     if not p.endswith((".part", ".ytdl"))][0]
-            audio = [p for p in glob.glob(os.path.join(tmp, "audio.*"))
-                     if not p.endswith((".part", ".ytdl"))][0]
-
-            out_name = f"{safe}.mp4"
-            out_tmp = os.path.join(tmp, "out.mp4")
-            cmd = ["ffmpeg", "-i", video, "-i", audio,
-                   "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", out_tmp]
-            if not run_ffmpeg("Merge", cmd, tmp, duration):
-                die("Merge ffmpeg gagal.")
-        else:
-            dl = opt["fmt"] if opt["kind"] == "native" else opt["src"]
-            if not run_yt("Audio", ["-f", dl["format_id"]],
-                          os.path.join(tmp, "audio.%(ext)s"), url):
-                die("Download audio gagal.")
-
-            audio = [p for p in glob.glob(os.path.join(tmp, "audio.*"))
-                     if not p.endswith((".part", ".ytdl"))][0]
-
-            if opt["kind"] == "native":
-                ext = os.path.splitext(audio)[1].lstrip(".") or dl.get("ext", "m4a")
-                out_tmp = audio
+        for n, (it, pl) in enumerate(todo, 1):
+            if len(todo) > 1:
+                print(paint(f"[{n}/{len(todo)}] {it['title']}", "1;36"))
+            base = unique_base(safe_title(it["title"]), used)
+            try:
+                path = download_one(it, mode, pl, base)
+            except ItemError as e:
+                failed.append((it["title"], str(e)))
+                print(paint(f"✖ {e}", "31"))
             else:
-                ext = opt["kind"]
-                out_tmp = os.path.join(tmp, "out." + ext)
-                if not run_ffmpeg("Convert", convert_cmd(opt, audio, out_tmp), tmp, duration):
-                    die("Konversi ffmpeg gagal.")
-            out_name = f"{safe}.{ext}"
-
-        shutil.move(out_tmp, os.path.join(OUT_DIR, out_name))
+                done.append(path)
+                print()
+                print(paint(f"✔ Selesai: {path}", "32"))
+            print()
+    except KeyboardInterrupt:
         print()
-        print(paint(f"✔ Selesai: {OUT_DIR}/{out_name}", "32"))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        die("Dibatalkan.")
+
+    if total_n > 1:
+        print(paint(f"Selesai {len(done)} dari {total_n}", "1;33" if failed else "1;32"))
+        for label, why in failed:
+            print(paint(f"  ✖ {label}: {why}", "31"))
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
     main()
 YTCLOUD_EOF
-[ -s "$BIN" ] || die "Could not write $BIN"
-chmod 755 "$BIN"
-python3 -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$BIN" \
-  || die "Generated ytcloud failed the syntax check."
+[ -s "$BIN.new" ] || die "Could not write $BIN.new"
+python3 -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$BIN.new" \
+  || { rm -f "$BIN.new"; die "Generated ytcloud failed the syntax check. Your existing ytcloud was left untouched."; }
+chmod 755 "$BIN.new"
+mv -f "$BIN.new" "$BIN" || die "Could not install $BIN"
 PREV=""
 [ -f "$RECORD" ] && PREV="$(grep -E '^(pkg|pip):' "$RECORD" 2>/dev/null)"
 {
