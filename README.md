@@ -20,7 +20,7 @@
 - Internet connection
 - `git` (only to clone this repo): `pkg install git`
 
-Everything else (Python, FFmpeg, yt-dlp) is installed by the installer.
+Everything else (Python, FFmpeg, yt-dlp and Deno) is installed by the installer.
 
 ## Installation
 
@@ -30,7 +30,7 @@ pkg install -y git && git clone https://github.com/pembri/ytcloud-cli && cd ytcl
 
 The installer will automatically:
 1. Check that you are running Termux
-2. Install `python` and `ffmpeg`, and check the MP3 and OPUS encoders
+2. Install `python`, `ffmpeg` and `deno`, and check the MP3 and OPUS encoders
 3. Install `yt-dlp`
 4. Check storage access (tap **Allow** when Android asks for permission)
 5. Generate the `ytcloud` command and install it so it can be run from anywhere
@@ -48,6 +48,7 @@ If you see `command not found` after installing, run `exec $SHELL` and try again
 | `ytcloud --audio "URL"` | Download audio directly (skips the format menu) |
 | `ytcloud --version` | Show the version number |
 | `ytcloud --help` | Show the help page |
+| `ytcloud --fix` | Fix download errors: updates yt-dlp first, then Deno |
 | `ytcloud --remove` | Uninstall YT Cloud CLI |
 
 Interactive mode looks like this:
@@ -134,7 +135,7 @@ cd ytcloud-cli && git pull && ./install.sh
 - Put links in quotes, or use the `Input URL :` prompt. Links containing `&` or `?` can be misread by the terminal.
 - Only the single video in a link is downloaded, not whole playlists.
 - Private or login-required content cannot be downloaded.
-- If downloads keep failing with `HTTP 403`, update yt-dlp: `pip install -U yt-dlp`
+- yt-dlp needs a JavaScript runtime (Deno) to read YouTube. If downloads fail with errors about a JS runtime, cookies or `HTTP 403`, run `ytcloud --fix`.
 - This tool uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org/) as its core engines.
 
 ## License

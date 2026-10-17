@@ -34,12 +34,17 @@ step 1 "Checking environment"
 ok "Termux detected"
 
 # 2. Packages
-step 2 "Installing packages (python, ffmpeg)"
+step 2 "Installing packages (python, ffmpeg, deno)"
 apt-get update >/dev/null 2>&1 || warn "Package list update failed, trying anyway"
 NEW_PKGS=""
 command -v python3 >/dev/null 2>&1 || NEW_PKGS="$NEW_PKGS python"
 command -v ffmpeg >/dev/null 2>&1 || NEW_PKGS="$NEW_PKGS ffmpeg"
 pkg install -y python ffmpeg || die "Could not install python/ffmpeg. Check your internet connection and try again."
+NEW_DENO=0
+command -v deno >/dev/null 2>&1 || NEW_DENO=1
+pkg install -y deno || warn "Could not install deno. YouTube downloads may fail without a JavaScript runtime."
+if [ "$NEW_DENO" = 1 ] && command -v deno >/dev/null 2>&1; then NEW_PKGS="$NEW_PKGS deno"; fi
+if command -v deno >/dev/null 2>&1; then ok "deno $(deno --version 2>/dev/null | head -1 | cut -d' ' -f2)"; fi
 command -v python3 >/dev/null 2>&1 || die "python3 not found after install."
 command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg not found after install."
 for enc in libmp3lame libopus; do
@@ -91,7 +96,7 @@ import sys
 import tempfile
 import time
 
-VERSION = "v1.0"
+VERSION = "v1.1"
 OUT_DIR = "/sdcard/Download/ytcloud"
 CLR = "\033[K"
 USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -128,12 +133,16 @@ def print_help():
   ytcloud "URL" "URL" ...    Download several links in one go (also with --videos / --audio)
   ytcloud --videos "URL"     Download video directly (skips the format menu)
   ytcloud --audio "URL"      Download audio directly (skips the format menu)
+  ytcloud --fix              Fix download errors (updates yt-dlp, then deno)
+  ytcloud --update           Update to the latest version (reinstalls from the repo)
   ytcloud --remove           Uninstall YT Cloud CLI completely
 
 {paint('OPTIONS', '1;33')}
   --videos      Go straight to video download, then pick a resolution
   --audio       Go straight to audio download, then pick an audio format
   --version     Show the version number
+  --fix         Fix extraction errors: updates yt-dlp, then deno
+  --update      Update YT Cloud CLI: pulls the latest version and reinstalls
   --remove      Uninstall YT Cloud CLI (your downloaded files are always kept)
   --help, -h    Show this help message
 
@@ -175,6 +184,10 @@ def parse_args(argv):
         if a == "--remove":
             do_remove()
             sys.exit(0)
+        if a == "--fix":
+            sys.exit(0 if do_fix() else 1)
+        if a == "--update":
+            sys.exit(0 if do_update() else 1)
         if a in ("--videos", "--video", "--audio"):
             m = 2 if a == "--audio" else 1
             if mode and mode != m:
@@ -431,6 +444,180 @@ def convert_cmd(opt, audio, out):
     return base + ["-c:a", "pcm_s16le", out]
 
 
+# ---------- Fix ----------
+
+TEST_URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+
+
+def ver_ytdlp():
+    try:
+        r = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True)
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def ver_deno():
+    try:
+        r = subprocess.run(["deno", "--version"], capture_output=True, text=True)
+    except OSError:
+        return None
+    lines = r.stdout.strip().splitlines()
+    if r.returncode != 0 or not lines:
+        return None
+    parts = lines[0].split()
+    return parts[1] if len(parts) > 1 else parts[0]
+
+
+def quiet(cmd):
+    try:
+        return subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL).returncode == 0
+    except OSError:
+        return False
+
+
+def report(name, before, after, ok):
+    if not after:
+        print(paint(f"  ✖ Could not install or update {name}. Check your internet connection.", "31"))
+    elif not ok:
+        print(paint(f"  ✖ Could not update {name} (still {after}).", "31"))
+    elif before is None:
+        print(paint(f"  ✔ {name} installed: {after}", "32"))
+    elif after == before:
+        print(paint(f"  ✔ {name} is already the latest ({after})", "32"))
+    else:
+        print(paint(f"  ✔ {name} updated: {before} → {after}", "32"))
+
+
+def do_fix():
+    header()
+    y0, d0 = ver_ytdlp(), ver_deno()
+    print(f"{paint('yt-dlp', '2')} : {y0 or 'not installed'}")
+    print(f"{paint('deno', '2')}   : {d0 or 'not installed'}")
+    print()
+
+    print(paint("[1/3] Updating yt-dlp (this can take a minute)...", "1;36"))
+    ok = (quiet([sys.executable, "-m", "pip", "install", "-U", "yt-dlp"])
+          or quiet([sys.executable, "-m", "pip", "install", "-U", "--break-system-packages", "yt-dlp"])
+          or quiet(["pkg", "install", "-y", "yt-dlp"]))
+    report("yt-dlp", y0, ver_ytdlp(), ok)
+    print()
+
+    print(paint("[2/3] Updating deno...", "1;36"))
+    ok = quiet(["pkg", "install", "-y", "deno"])
+    report("deno", d0, ver_deno(), ok)
+    print()
+
+    print(paint("[3/3] Testing YouTube extraction...", "1;36"))
+    try:
+        r = subprocess.run(["yt-dlp", "--simulate", "--no-playlist", "--no-warnings", TEST_URL],
+                           capture_output=True, text=True)
+    except OSError:
+        print(paint("  ✖ yt-dlp could not be started.", "31"))
+        return False
+    if r.returncode == 0:
+        print(paint("  ✔ Extraction works. You are good to go.", "32"))
+        return True
+    print(paint("  ✖ Extraction still fails:", "31"))
+    for line in r.stderr.strip().splitlines()[-6:]:
+        print(f"    {line}")
+    print("  Try again in a few hours, or run:  yt-dlp -v --simulate '" + TEST_URL + "'")
+    return False
+
+
+# ---------- Update ----------
+
+REPO_URL = "https://github.com/pembri/ytcloud-cli"
+
+
+def valid_repo(d):
+    return (bool(d) and os.path.isfile(os.path.join(d, "install.sh"))
+            and os.path.isdir(os.path.join(d, ".git")))
+
+
+def find_repo(home):
+    record = os.path.join(home, ".ytcloud")
+    first = ""
+    if os.path.isfile(record):
+        try:
+            with open(record, encoding="utf-8") as fh:
+                first = fh.readline().strip()
+        except OSError:
+            first = ""
+    cand = os.path.realpath(first) if first else ""
+    if (cand.startswith(home + os.sep) and os.path.basename(cand) == "ytcloud-cli"
+            and valid_repo(cand)):
+        return cand
+    return None
+
+
+def git_out(repo, *args):
+    r = subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True)
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+def do_update():
+    header()
+    home = os.path.realpath(os.path.expanduser("~"))
+    if not shutil.which("git"):
+        print(paint("✖ git is not installed. Run: pkg install git", "31"))
+        return False
+    print(f"{paint('Current version', '2')} : {VERSION}")
+    print()
+
+    repo = find_repo(home) or os.path.join(home, "ytcloud-cli")
+    print(paint("[1/2] Getting the latest version...", "1;36"))
+    if not os.path.exists(repo):
+        r = subprocess.run(["git", "clone", REPO_URL, repo], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(paint("  ✖ Could not download the repo:", "31"))
+            for line in r.stderr.strip().splitlines()[-5:]:
+                print(f"    {line}")
+            return False
+        c0 = None
+    elif not valid_repo(repo):
+        print(paint(f"  ✖ {repo} exists but is not a YT Cloud CLI repo. Move or delete it, then try again.", "31"))
+        return False
+    else:
+        _, c0 = git_out(repo, "rev-parse", "--short", "HEAD")
+        rc, out = git_out(repo, "pull", "--ff-only")
+        if rc != 0:
+            print(paint("  ✖ Could not pull the latest version:", "31"))
+            for line in out.splitlines()[-6:]:
+                print(f"    {line}")
+            print("  Nothing was changed. Fix the problem above, or reinstall manually.")
+            return False
+    _, c1 = git_out(repo, "rev-parse", "--short", "HEAD")
+    if c0 and c0 == c1:
+        print(paint(f"  ✔ Already up to date ({c1})", "32"))
+    elif c0:
+        print(paint(f"  ✔ Downloaded new version: {c0} → {c1}", "32"))
+    else:
+        print(paint(f"  ✔ Downloaded ({c1})", "32"))
+    print()
+
+    print(paint("[2/2] Reinstalling...", "1;36"))
+    rc = subprocess.run(["bash", os.path.join(repo, "install.sh")], cwd=repo).returncode
+    print()
+    if rc != 0:
+        print(paint("✖ The installer reported a problem (see above).", "31"))
+        return False
+    v1 = None
+    try:
+        r = subprocess.run([os.path.abspath(__file__), "--version"], capture_output=True, text=True)
+        v1 = r.stdout.strip() or None
+    except OSError:
+        pass
+    if v1 and v1 != VERSION:
+        print(paint(f"✔ Updated: {VERSION} → {v1}", "32"))
+    else:
+        print(paint(f"✔ Reinstalled ({v1 or VERSION}). You are on the latest version.", "32"))
+    return True
+
+
 # ---------- Uninstall ----------
 
 def do_remove():
@@ -474,7 +661,7 @@ def do_remove():
         names = ", ".join(x.split(":", 1)[1] for x in tracked)
         print(paint(f"Packages added by the installer ({names}) are asked about separately.", "2"))
     else:
-        print(paint("Python, FFmpeg and yt-dlp were already on this device, so they are kept.", "2"))
+        print(paint("Python, FFmpeg, yt-dlp and deno were already on this device, so they are kept.", "2"))
     print()
     if not ask_yn("Continue? (y/n) : "):
         print("Cancelled.")
@@ -544,8 +731,12 @@ def fetch_info(url):
     r = subprocess.run(["yt-dlp", "-J", "--no-playlist", url],
                        capture_output=True, text=True)
     if r.returncode != 0:
-        lines = r.stderr.strip().splitlines()
-        raise ItemError(lines[-1] if lines else "Gagal ambil info video.")
+        err = r.stderr.strip()
+        lines = err.splitlines()
+        msg = lines[-1] if lines else "Gagal ambil info video."
+        if re.search(r"js runtime|javascript|deno|sign in|cookies|nsig|signature", err, re.I):
+            msg += "  (coba: ytcloud --fix)"
+        raise ItemError(msg)
     try:
         info = json.loads(r.stdout)
     except ValueError:
@@ -696,6 +887,7 @@ def main():
     for label, why in failed:
         print(paint(f"✖ {label}: {why}", "31"))
     if not items:
+        print("Jika error menyebut JS runtime, cookies, atau 'sign in', coba: ytcloud --fix")
         die("Tidak ada URL yang bisa diproses.")
 
     if len(items) == 1:
