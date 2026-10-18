@@ -10,6 +10,7 @@
 - Shortcut commands: `--videos` and `--audio` skip the format menu
 - Size estimate and confirmation before every download
 - Automatic retry when YouTube temporarily refuses a download (HTTP 403)
+- Built-in repair command (`--fix`) and one-command update (`--update`)
 - Videos and audio are saved in separate folders
 - Colorized, easy-to-read terminal UI
 - Single-file installer and a clean uninstaller that never touches your downloads
@@ -49,6 +50,7 @@ If you see `command not found` after installing, run `exec $SHELL` and try again
 | `ytcloud --version` | Show the version number |
 | `ytcloud --help` | Show the help page |
 | `ytcloud --fix` | Fix download errors: updates yt-dlp first, then Deno |
+| `ytcloud --update` | Update to the latest version (pulls this repo and reinstalls) |
 | `ytcloud --remove` | Uninstall YT Cloud CLI |
 
 Interactive mode looks like this:
@@ -108,6 +110,20 @@ ytcloud-cli/
 
 The whole `ytcloud` program is embedded inside `install.sh`. The installer generates the command and places it in Termux's `bin` folder.
 
+## Updating
+
+```bash
+ytcloud --update
+```
+
+It pulls the latest version from this repo and reinstalls `ytcloud` for you, so there is no need to uninstall first. The installer also refreshes yt-dlp and Deno while it runs.
+
+If your version is too old to have `--update`, update once by hand:
+
+```bash
+cd ytcloud-cli && git pull && ./install.sh
+```
+
 ## Uninstall
 
 ```bash
@@ -121,14 +137,6 @@ This will remove:
 - Packages that the installer added itself (it asks first, and only for packages that were not on your device before)
 
 Your downloaded files in `/sdcard/Download/ytcloud` are **never** deleted. The folder is only removed when it is completely empty.
-
-## Updating
-
-Re-run the installer (it safely overwrites the old command and also updates yt-dlp):
-
-```bash
-cd ytcloud-cli && git pull && ./install.sh
-```
 
 ## Notes
 
