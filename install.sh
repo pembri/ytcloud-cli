@@ -11,10 +11,10 @@ SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOTAL=5
 
 # API endpoint that serves the compiled ytcloud binary.
-# X-YTCLOUD-KEY is a weak, hardcoded obstacle (security by obscurity), not real
+# API_KEY is a weak, hardcoded obstacle (security by obscurity), not real
 # access control — it only stops casual copy/rename, nothing more.
-API_BASE="https://riracloud.my.id/api/ytcloud-cli"
-X-YTCLOUD-KEY="068c2a75086b0d3c4e003c8424abb0adfe074c539fe7e8b00d0f000c413a45e0"
+API_BASE="https://riracloud.my.id/api/ytcloud-cli/download"
+API_KEY="068c2a75086b0d3c4e003c8424abb0adfe074c539fe7e8b00d0f000c413a45e0"
 REPO_URL="https://github.com/pembri/ytcloud-cli"
 
 if [ -t 1 ]; then
@@ -95,7 +95,7 @@ command -v curl >/dev/null 2>&1 || pkg install -y curl >/dev/null 2>&1
 command -v curl >/dev/null 2>&1 || die "curl is required but could not be installed."
 
 HTTP_CODE="$(curl -sS -o "$BIN.new" -w '%{http_code}' \
-  -H "X-YTCLOUD-KEY: $X-YTCLOUD-KEY" \
+  -H "X-YTCLOUD-KEY: $API_KEY" \
   "$API_BASE/download")"
 
 if [ "$HTTP_CODE" != "200" ] || [ ! -s "$BIN.new" ]; then
@@ -105,7 +105,7 @@ fi
 chmod 755 "$BIN.new"
 mv -f "$BIN.new" "$BIN" || die "Could not install $BIN"
 
-REMOTE_VERSION="$(curl -sS -H "X-YTCLOUD-KEY: $X-YTCLOUD-KEY" "$API_BASE/version" 2>/dev/null)"
+REMOTE_VERSION="$(curl -sS -H "X-YTCLOUD-KEY: $API_KEY" "$API_BASE/version" 2>/dev/null)"
 PREV=""
 [ -f "$RECORD" ] && PREV="$(grep -E '^(pkg|pip):' "$RECORD" 2>/dev/null)"
 {
