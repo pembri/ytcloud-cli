@@ -21,7 +21,7 @@
 - Internet connection
 - `git` (only to clone this repo): `pkg install git`
 
-Everything else (Python, FFmpeg, yt-dlp and Deno) is installed by the installer.
+Everything else (Python, FFmpeg, yt-dlp, Deno, curl) is installed by the installer.
 
 ## Installation
 
@@ -34,7 +34,9 @@ The installer will automatically:
 2. Install `python`, `ffmpeg` and `deno`, and check the MP3 and OPUS encoders
 3. Install `yt-dlp`
 4. Check storage access (tap **Allow** when Android asks for permission)
-5. Generate the `ytcloud` command and install it so it can be run from anywhere
+5. Fetch the `ytcloud` command and install it so it can be run from anywhere
+
+The cloned `ytcloud-cli` folder is removed automatically once installation finishes — you don't need to clean it up yourself, and it isn't needed to run `ytcloud` afterward.
 
 If you see `command not found` after installing, run `exec $SHELL` and try again.
 
@@ -50,7 +52,7 @@ If you see `command not found` after installing, run `exec $SHELL` and try again
 | `ytcloud --version` | Show the version number |
 | `ytcloud --help` | Show the help page |
 | `ytcloud --fix` | Fix download errors: updates yt-dlp first, then Deno |
-| `ytcloud --update` | Update to the latest version (pulls this repo and reinstalls) |
+| `ytcloud --update` | Update to the latest version |
 | `ytcloud --remove` | Uninstall YT Cloud CLI |
 
 Interactive mode looks like this:
@@ -108,7 +110,7 @@ ytcloud-cli/
 └── README.md
 ```
 
-The whole `ytcloud` program is embedded inside `install.sh`. The installer generates the command and places it in Termux's `bin` folder.
+`install.sh` fetches the `ytcloud` command and installs it directly to Termux's `bin` folder. The cloned repo folder is deleted automatically right after installation, so nothing is left behind except the ready-to-use `ytcloud` command.
 
 ## Updating
 
@@ -116,12 +118,12 @@ The whole `ytcloud` program is embedded inside `install.sh`. The installer gener
 ytcloud --update
 ```
 
-It pulls the latest version from this repo and reinstalls `ytcloud` for you, so there is no need to uninstall first. The installer also refreshes yt-dlp and Deno while it runs.
+This clones a fresh, temporary copy of this repo, reinstalls `ytcloud` from it, and removes the temporary copy afterward — so you always end up on the latest version without any leftover files. The installer also refreshes yt-dlp and Deno while it runs.
 
 If your version is too old to have `--update`, update once by hand:
 
 ```bash
-cd ytcloud-cli && git pull && ./install.sh
+git clone https://github.com/pembri/ytcloud-cli && cd ytcloud-cli && chmod +x install.sh && ./install.sh
 ```
 
 ## Uninstall
@@ -132,9 +134,10 @@ ytcloud --remove
 
 This will remove:
 - The `ytcloud` command
-- The cloned `ytcloud-cli` folder and the install record
+- The install record
 - The yt-dlp cache
-- Packages that the installer added itself (it asks first, and only for packages that were not on your device before)
+
+You'll also be asked whether to keep or remove the packages the installer added on top of what was already on your device (for example `ffmpeg`, `deno`, or `yt-dlp` if they weren't installed before). Keeping them is the safe default if you plan to reinstall later or use them for something else.
 
 Your downloaded files in `/sdcard/Download/ytcloud` are **never** deleted. The folder is only removed when it is completely empty.
 
