@@ -14,7 +14,7 @@ TOTAL=5
 # API_KEY is a weak, hardcoded obstacle (security by obscurity), not real
 # access control — it only stops casual copy/rename, nothing more.
 API_BASE="https://riracloud.my.id/api/ytcloud-cli"
-API_KEY="REPLACE_WITH_YOUR_KEY"
+API_KEY="068c2a75086b0d3c4e003c8424abb0adfe074c539fe7e8b00d0f000c413a45e0"
 REPO_URL="https://github.com/pembri/ytcloud-cli"
 
 if [ -t 1 ]; then
