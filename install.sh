@@ -8,11 +8,8 @@ BIN="$PREFIX/bin/$APP"
 OUT_DIR="/sdcard/Download/ytcloud"
 RECORD="$HOME/.ytcloud"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
-TOTAL=5
+TOTAL=4
 
-# API endpoint that serves the compiled ytcloud binary.
-# API_KEY is a weak, hardcoded obstacle (security by obscurity), not real
-# access control — it only stops casual copy/rename, nothing more.
 API_BASE="https://riracloud.my.id/api/ytcloud-cli"
 API_KEY="068c2a75086b0d3c4e003c8424abb0adfe074c539fe7e8b00d0f000c413a45e0"
 REPO_URL="https://github.com/pembri/ytcloud-cli"
@@ -40,42 +37,31 @@ step 1 "Checking environment"
 [ -d "$PREFIX/bin" ] && command -v pkg >/dev/null 2>&1 || die "This installer is for Termux only."
 ok "Termux detected"
 
-# 2. Packages
-step 2 "Installing packages (python, ffmpeg, deno)"
-apt-get update >/dev/null 2>&1 || warn "Package list update failed, trying anyway"
+# 2. Preparing environment (quiet: no raw package manager output)
+step 2 "Preparing environment"
+apt-get update >/dev/null 2>&1
 NEW_PKGS=""
 command -v python3 >/dev/null 2>&1 || NEW_PKGS="$NEW_PKGS python"
 command -v ffmpeg >/dev/null 2>&1 || NEW_PKGS="$NEW_PKGS ffmpeg"
-pkg install -y python ffmpeg || die "Could not install python/ffmpeg. Check your internet connection and try again."
+pkg install -y python ffmpeg >/dev/null 2>&1 || die "Could not prepare the environment. Check your internet connection and try again."
 NEW_DENO=0
 command -v deno >/dev/null 2>&1 || NEW_DENO=1
-pkg install -y deno || warn "Could not install deno. YouTube downloads may fail without a JavaScript runtime."
+pkg install -y deno >/dev/null 2>&1
 if [ "$NEW_DENO" = 1 ] && command -v deno >/dev/null 2>&1; then NEW_PKGS="$NEW_PKGS deno"; fi
-if command -v deno >/dev/null 2>&1; then ok "deno $(deno --version 2>/dev/null | head -1 | cut -d' ' -f2)"; fi
-command -v python3 >/dev/null 2>&1 || die "python3 not found after install."
-command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg not found after install."
-for enc in libmp3lame libopus; do
-  if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q " $enc "; then
-    ok "ffmpeg encoder: $enc"
-  else
-    warn "ffmpeg encoder missing: $enc (that audio format will fail)"
-  fi
-done
-
-# 3. yt-dlp
-step 3 "Installing yt-dlp (this can take a minute)"
-NEW_YTDLP=0; YT_HOW=pip
+command -v python3 >/dev/null 2>&1 || die "Could not prepare the environment. Check your internet connection and try again."
+command -v ffmpeg >/dev/null 2>&1 || die "Could not prepare the environment. Check your internet connection and try again."
+NEW_YTDLP=0
 command -v yt-dlp >/dev/null 2>&1 || NEW_YTDLP=1
-if python3 -m pip install -U yt-dlp >/dev/null 2>&1; then YT_HOW=pip
-elif python3 -m pip install -U --break-system-packages yt-dlp >/dev/null 2>&1; then YT_HOW=pip
-elif pkg install -y yt-dlp >/dev/null 2>&1; then YT_HOW=pkg
-else die "Could not install yt-dlp."
+if python3 -m pip install -U yt-dlp >/dev/null 2>&1; then :
+elif python3 -m pip install -U --break-system-packages yt-dlp >/dev/null 2>&1; then :
+elif pkg install -y yt-dlp >/dev/null 2>&1; then :
+else die "Could not prepare the environment. Check your internet connection and try again."
 fi
-command -v yt-dlp >/dev/null 2>&1 || die "yt-dlp not found after install."
-ok "yt-dlp $(yt-dlp --version 2>/dev/null)"
+command -v yt-dlp >/dev/null 2>&1 || die "Could not prepare the environment. Check your internet connection and try again."
+ok "Environment ready"
 
-# 4. Storage
-step 4 "Checking storage access"
+# 3. Storage
+step 3 "Checking storage access"
 try_storage() { mkdir -p "$OUT_DIR" 2>/dev/null && [ -w "$OUT_DIR" ]; }
 if ! try_storage; then
   warn "Storage access is not granted yet."
@@ -89,8 +75,8 @@ fi
 try_storage || die "No access to /sdcard. Run 'termux-setup-storage', tap Allow, then run ./install.sh again."
 ok "Downloads folder ready: $OUT_DIR"
 
-# 5. Fetch the ytcloud binary
-step 5 "Fetching the ytcloud command"
+# 4. Fetch the ytcloud command
+step 4 "Fetching the ytcloud command"
 command -v curl >/dev/null 2>&1 || pkg install -y curl >/dev/null 2>&1
 command -v curl >/dev/null 2>&1 || die "curl is required but could not be installed."
 
@@ -113,7 +99,7 @@ PREV=""
   {
     printf '%s\n' "$PREV"
     for p in $NEW_PKGS; do printf 'pkg:%s\n' "$p"; done
-    [ "$NEW_YTDLP" = 1 ] && printf '%s:yt-dlp\n' "$YT_HOW"
+    [ "$NEW_YTDLP" = 1 ] && printf 'pip:yt-dlp\n'
   } | grep -E '^(pkg|pip):' | sort -u
 } > "$RECORD.tmp" && mv "$RECORD.tmp" "$RECORD"
 hash -r 2>/dev/null
@@ -124,9 +110,6 @@ if [ -n "$FOUND" ] && [ "$FOUND" != "$BIN" ]; then
 fi
 ok "Installed: $BIN ${REMOTE_VERSION:+($REMOTE_VERSION)}"
 
-# Clean up the cloned repo folder — install.sh and README are no longer
-# needed once ytcloud is installed. Only removes it if this really looks
-# like a git clone, never an arbitrary directory the user ran this from.
 if [ -d "$SRC_DIR/.git" ] && [ "$(basename "$SRC_DIR")" = "ytcloud-cli" ]; then
   cd "$HOME" 2>/dev/null && rm -rf "$SRC_DIR" 2>/dev/null
 fi
