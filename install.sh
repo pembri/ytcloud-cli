@@ -8,86 +8,135 @@ BIN="$PREFIX/bin/$APP"
 OUT_DIR="/sdcard/Download/ytcloud"
 RECORD="$HOME/.ytcloud"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
-TOTAL=4
 
 API_BASE="https://riracloud.my.id/api/ytcloud-cli"
 API_KEY="068c2a75086b0d3c4e003c8424abb0adfe074c539fe7e8b00d0f000c413a45e0"
 REPO_URL="https://github.com/pembri/ytcloud-cli"
 
 if [ -t 1 ]; then
-  C_B=$'\033[1;36m'; C_G=$'\033[32m'; C_R=$'\033[31m'
-  C_Y=$'\033[33m'; C_D=$'\033[2m'; C_0=$'\033[0m'
+  C_B=$'\033[1;36m'; C_G=$'\033[32m'; C_R=$'\033[31m'; C_0=$'\033[0m'
 else
-  C_B=""; C_G=""; C_R=""; C_Y=""; C_D=""; C_0=""
+  C_B=""; C_G=""; C_R=""; C_0=""
 fi
 
-step() { printf '\n%s[%s/%s]%s %s\n' "$C_B" "$1" "$TOTAL" "$C_0" "$2"; }
-ok()   { printf '  %s✔%s %s\n' "$C_G" "$C_0" "$1"; }
-warn() { printf '  %s!%s %s\n' "$C_Y" "$C_0" "$1"; }
-die()  { printf '\n%s✖ %s%s\n' "$C_R" "$1" "$C_0"; exit 1; }
+WIDTH=30
+STATE_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$STATE_DIR"; }
+trap cleanup EXIT
+
+draw() {
+  local pct=$1 label=$2
+  local filled=$(( pct * WIDTH / 100 ))
+  local empty=$(( WIDTH - filled ))
+  local bar="" i
+  for ((i = 0; i < filled; i++)); do bar+="#"; done
+  for ((i = 0; i < empty; i++)); do bar+="-"; done
+  printf '\r%s[%s]%s %3d%%  %s\033[K' "$C_B" "$bar" "$C_0" "$pct" "$label"
+}
+
+die() {
+  echo
+  printf '\n%s✖ %s%s\n' "$C_R" "$1" "$C_0"
+  exit 1
+}
+
+# Runs "$@" in the background while animating the bar from $2 to $3-1,
+# then snaps to $3 when the job finishes. Returns the job's exit code.
+run_step() {
+  local label="$1" start="$2" end="$3"; shift 3
+  draw "$start" "$label"
+  ( "$@" ) >"$STATE_DIR/log" 2>&1 &
+  local pid=$!
+  local pct=$start
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 0.25
+    if [ "$pct" -lt $(( end - 1 )) ]; then pct=$(( pct + 1 )); fi
+    draw "$pct" "$label"
+  done
+  wait "$pid"
+  local rc=$?
+  draw "$end" "$label"
+  return $rc
+}
 
 LINE=$(printf '═%.0s' $(seq 1 34))
 printf '%s╔%s╗\n' "$C_B" "$LINE"
 printf '║   YT Cloud CLI by Rira Project   ║\n'
 printf '╚%s╝%s\n' "$LINE" "$C_0"
-printf '%sInstaller%s\n' "$C_D" "$C_0"
+echo
 
-# 1. Environment
-step 1 "Checking environment"
 [ -d "$PREFIX/bin" ] && command -v pkg >/dev/null 2>&1 || die "This installer is for Termux only."
-ok "Termux detected"
 
-# 2. Preparing environment (quiet: no raw package manager output)
-step 2 "Preparing environment"
-apt-get update >/dev/null 2>&1
+HAD_PYTHON=0; command -v python3 >/dev/null 2>&1 && HAD_PYTHON=1
+HAD_FFMPEG=0; command -v ffmpeg >/dev/null 2>&1 && HAD_FFMPEG=1
+HAD_DENO=0; command -v deno >/dev/null 2>&1 && HAD_DENO=1
+HAD_YTDLP=0; command -v yt-dlp >/dev/null 2>&1 && HAD_YTDLP=1
+
+prepare_env() {
+  apt-get update >/dev/null 2>&1
+  pkg install -y python ffmpeg >/dev/null 2>&1 || return 1
+  pkg install -y deno >/dev/null 2>&1
+  if python3 -m pip install -U yt-dlp >/dev/null 2>&1; then :
+  elif python3 -m pip install -U --break-system-packages yt-dlp >/dev/null 2>&1; then :
+  elif pkg install -y yt-dlp >/dev/null 2>&1; then :
+  else return 1
+  fi
+  command -v python3 >/dev/null 2>&1 || return 1
+  command -v ffmpeg >/dev/null 2>&1 || return 1
+  command -v yt-dlp >/dev/null 2>&1 || return 1
+  return 0
+}
+export -f prepare_env
+
+run_step "Preparing environment" 0 65 bash -c prepare_env
+PREP_RC=$?
+[ "$PREP_RC" -ne 0 ] && die "Could not prepare the environment. Check your internet connection and try again."
+
 NEW_PKGS=""
-command -v python3 >/dev/null 2>&1 || NEW_PKGS="$NEW_PKGS python"
-command -v ffmpeg >/dev/null 2>&1 || NEW_PKGS="$NEW_PKGS ffmpeg"
-pkg install -y python ffmpeg >/dev/null 2>&1 || die "Could not prepare the environment. Check your internet connection and try again."
-NEW_DENO=0
-command -v deno >/dev/null 2>&1 || NEW_DENO=1
-pkg install -y deno >/dev/null 2>&1
-if [ "$NEW_DENO" = 1 ] && command -v deno >/dev/null 2>&1; then NEW_PKGS="$NEW_PKGS deno"; fi
-command -v python3 >/dev/null 2>&1 || die "Could not prepare the environment. Check your internet connection and try again."
-command -v ffmpeg >/dev/null 2>&1 || die "Could not prepare the environment. Check your internet connection and try again."
+[ "$HAD_PYTHON" = 0 ] && command -v python3 >/dev/null 2>&1 && NEW_PKGS="$NEW_PKGS python"
+[ "$HAD_FFMPEG" = 0 ] && command -v ffmpeg >/dev/null 2>&1 && NEW_PKGS="$NEW_PKGS ffmpeg"
+[ "$HAD_DENO" = 0 ] && command -v deno >/dev/null 2>&1 && NEW_PKGS="$NEW_PKGS deno"
 NEW_YTDLP=0
-command -v yt-dlp >/dev/null 2>&1 || NEW_YTDLP=1
-if python3 -m pip install -U yt-dlp >/dev/null 2>&1; then :
-elif python3 -m pip install -U --break-system-packages yt-dlp >/dev/null 2>&1; then :
-elif pkg install -y yt-dlp >/dev/null 2>&1; then :
-else die "Could not prepare the environment. Check your internet connection and try again."
-fi
-command -v yt-dlp >/dev/null 2>&1 || die "Could not prepare the environment. Check your internet connection and try again."
-ok "Environment ready"
+[ "$HAD_YTDLP" = 0 ] && command -v yt-dlp >/dev/null 2>&1 && NEW_YTDLP=1
 
-# 3. Storage
-step 3 "Checking storage access"
-try_storage() { mkdir -p "$OUT_DIR" 2>/dev/null && [ -w "$OUT_DIR" ]; }
-if ! try_storage; then
-  warn "Storage access is not granted yet."
-  echo "    Tap 'Allow' on the Android permission pop-up..."
-  termux-setup-storage
-  for _ in $(seq 1 45); do
+storage_wait() {
+  mkdir -p "$OUT_DIR" 2>/dev/null
+  [ -w "$OUT_DIR" ] && return 0
+  termux-setup-storage >/dev/null 2>&1
+  local i
+  for i in $(seq 1 45); do
     sleep 2
-    try_storage && break
+    mkdir -p "$OUT_DIR" 2>/dev/null
+    [ -w "$OUT_DIR" ] && return 0
   done
-fi
-try_storage || die "No access to /sdcard. Run 'termux-setup-storage', tap Allow, then run ./install.sh again."
-ok "Downloads folder ready: $OUT_DIR"
+  return 1
+}
+export -f storage_wait
+export OUT_DIR
 
-# 4. Fetch the ytcloud command
-step 4 "Fetching the ytcloud command"
-command -v curl >/dev/null 2>&1 || pkg install -y curl >/dev/null 2>&1
-command -v curl >/dev/null 2>&1 || die "curl is required but could not be installed."
+run_step "Checking storage access" 65 85 bash -c storage_wait
+[ $? -ne 0 ] && die "No access to /sdcard. Run 'termux-setup-storage', tap Allow, then run ./install.sh again."
 
-HTTP_CODE="$(curl -sS -o "$BIN.new" -w '%{http_code}' \
-  -H "X-YTCLOUD-KEY: $API_KEY" \
-  "$API_BASE/download")"
+fetch_cmd() {
+  command -v curl >/dev/null 2>&1 || pkg install -y curl >/dev/null 2>&1
+  command -v curl >/dev/null 2>&1 || return 1
+  local code
+  code="$(curl -sS -o "$BIN.new" -w '%{http_code}' -H "X-YTCLOUD-KEY: $API_KEY" "$API_BASE/download")"
+  echo "$code" > "$STATE_DIR/http_code"
+  [ "$code" = "200" ] && [ -s "$BIN.new" ]
+}
+export -f fetch_cmd
+export BIN API_KEY API_BASE STATE_DIR
 
-if [ "$HTTP_CODE" != "200" ] || [ ! -s "$BIN.new" ]; then
+run_step "Fetching the ytcloud command" 85 100 bash -c fetch_cmd
+FETCH_RC=$?
+echo
+if [ "$FETCH_RC" -ne 0 ]; then
+  CODE="$(cat "$STATE_DIR/http_code" 2>/dev/null || echo '?')"
   rm -f "$BIN.new"
-  die "Could not fetch ytcloud (HTTP $HTTP_CODE). Check your internet connection and try again."
+  die "Could not fetch ytcloud (HTTP $CODE). Check your internet connection and try again."
 fi
+
 chmod 755 "$BIN.new"
 mv -f "$BIN.new" "$BIN" || die "Could not install $BIN"
 
@@ -103,17 +152,19 @@ PREV=""
   } | grep -E '^(pkg|pip):' | sort -u
 } > "$RECORD.tmp" && mv "$RECORD.tmp" "$RECORD"
 hash -r 2>/dev/null
+
 FOUND="$(command -v ytcloud 2>/dev/null)"
 if [ -n "$FOUND" ] && [ "$FOUND" != "$BIN" ]; then
-  warn "Another 'ytcloud' comes first in PATH: $FOUND"
-  warn "Delete it so the new one is used:  rm $FOUND"
+  printf '%s! Another ytcloud comes first in PATH: %s%s\n' "$C_R" "$FOUND" "$C_0"
+  printf '  Delete it so the new one is used:  rm %s\n' "$FOUND"
 fi
-ok "Installed: $BIN ${REMOTE_VERSION:+($REMOTE_VERSION)}"
+
+printf '%s✔ Installed%s %s\n' "$C_G" "$C_0" "${REMOTE_VERSION:+($REMOTE_VERSION)}"
 
 if [ -d "$SRC_DIR/.git" ] && [ "$(basename "$SRC_DIR")" = "ytcloud-cli" ]; then
   cd "$HOME" 2>/dev/null && rm -rf "$SRC_DIR" 2>/dev/null
 fi
 
 printf '\n%s✔ Done!%s Run:  %sytcloud%s\n' "$C_G" "$C_0" "$C_B" "$C_0"
-printf '%sHelp: ytcloud --help   |   Uninstall: ytcloud --remove%s\n' "$C_D" "$C_0"
-printf '%sIf "command not found" appears, run: exec $SHELL%s\n\n' "$C_D" "$C_0"
+printf 'Help: ytcloud --help   |   Uninstall: ytcloud --remove\n'
+printf 'If "command not found" appears, run: exec $SHELL\n\n'
