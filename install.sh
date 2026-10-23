@@ -24,38 +24,73 @@ STATE_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$STATE_DIR"; }
 trap cleanup EXIT
 
-draw() {
+DONE_STEPS=()
+LAST_LINES=0
+
+draw_bar() {
   local pct=$1 label=$2
   local filled=$(( pct * WIDTH / 100 ))
   local empty=$(( WIDTH - filled ))
   local bar="" i
   for ((i = 0; i < filled; i++)); do bar+="#"; done
   for ((i = 0; i < empty; i++)); do bar+="-"; done
-  printf '\r%s[%s]%s %3d%%  %s\033[K' "$C_B" "$bar" "$C_0" "$pct" "$label"
+  printf '%s[%s]%s %3d%%  %s' "$C_B" "$bar" "$C_0" "$pct" "$label"
+}
+
+# Redraws the whole block in place: completed steps as checkmarks, then
+# the live progress bar for the step currently running.
+render() {
+  local pct="$1" label="$2"
+  if [ "$LAST_LINES" -gt 0 ]; then
+    printf '\033[%dA\033[J' "$LAST_LINES"
+  fi
+  local item
+  for item in "${DONE_STEPS[@]}"; do
+    printf '%s✔%s %s\n' "$C_G" "$C_0" "$item"
+  done
+  draw_bar "$pct" "$label"
+  echo
+  LAST_LINES=$(( ${#DONE_STEPS[@]} + 1 ))
+}
+
+# Final redraw once everything is done: checklist only, no bar line left behind.
+finish_render() {
+  if [ "$LAST_LINES" -gt 0 ]; then
+    printf '\033[%dA\033[J' "$LAST_LINES"
+  fi
+  local item
+  for item in "${DONE_STEPS[@]}"; do
+    printf '%s✔%s %s\n' "$C_G" "$C_0" "$item"
+  done
+  LAST_LINES=0
 }
 
 die() {
-  echo
+  finish_render
   printf '\n%s✖ %s%s\n' "$C_R" "$1" "$C_0"
   exit 1
 }
 
 # Runs "$@" in the background while animating the bar from $2 to $3-1,
-# then snaps to $3 when the job finishes. Returns the job's exit code.
+# then snaps to $3 when the job finishes. On success, marks the step done
+# (so it becomes a permanent checklist line) and returns 0; else returns 1.
 run_step() {
   local label="$1" start="$2" end="$3"; shift 3
-  draw "$start" "$label"
+  render "$start" "$label"
   ( "$@" ) >"$STATE_DIR/log" 2>&1 &
   local pid=$!
   local pct=$start
   while kill -0 "$pid" 2>/dev/null; do
-    sleep 0.25
+    sleep 0.2
     if [ "$pct" -lt $(( end - 1 )) ]; then pct=$(( pct + 1 )); fi
-    draw "$pct" "$label"
+    render "$pct" "$label"
   done
   wait "$pid"
   local rc=$?
-  draw "$end" "$label"
+  render "$end" "$label"
+  if [ "$rc" -eq 0 ]; then
+    DONE_STEPS+=("$label")
+  fi
   return $rc
 }
 
@@ -65,7 +100,12 @@ printf '║   YT Cloud CLI by Rira Project   ║\n'
 printf '╚%s╝%s\n' "$LINE" "$C_0"
 echo
 
-[ -d "$PREFIX/bin" ] && command -v pkg >/dev/null 2>&1 || die "This installer is for Termux only."
+render 0 "Checking environment"
+if ! { [ -d "$PREFIX/bin" ] && command -v pkg >/dev/null 2>&1; }; then
+  die "This installer is for Termux only."
+fi
+render 5 "Checking environment"
+DONE_STEPS+=("Checking environment")
 
 HAD_PYTHON=0; command -v python3 >/dev/null 2>&1 && HAD_PYTHON=1
 HAD_FFMPEG=0; command -v ffmpeg >/dev/null 2>&1 && HAD_FFMPEG=1
@@ -88,9 +128,8 @@ prepare_env() {
 }
 export -f prepare_env
 
-run_step "Preparing environment" 0 65 bash -c prepare_env
-PREP_RC=$?
-[ "$PREP_RC" -ne 0 ] && die "Could not prepare the environment. Check your internet connection and try again."
+run_step "Preparing environment" 5 65 bash -c prepare_env \
+  || die "Could not prepare the environment. Check your internet connection and try again."
 
 NEW_PKGS=""
 [ "$HAD_PYTHON" = 0 ] && command -v python3 >/dev/null 2>&1 && NEW_PKGS="$NEW_PKGS python"
@@ -114,8 +153,8 @@ storage_wait() {
 export -f storage_wait
 export OUT_DIR
 
-run_step "Checking storage access" 65 85 bash -c storage_wait
-[ $? -ne 0 ] && die "No access to /sdcard. Run 'termux-setup-storage', tap Allow, then run ./install.sh again."
+run_step "Checking storage access" 65 85 bash -c storage_wait \
+  || die "No access to /sdcard. Run 'termux-setup-storage', tap Allow, then run ./install.sh again."
 
 fetch_cmd() {
   command -v curl >/dev/null 2>&1 || pkg install -y curl >/dev/null 2>&1
@@ -128,14 +167,14 @@ fetch_cmd() {
 export -f fetch_cmd
 export BIN API_KEY API_BASE STATE_DIR
 
-run_step "Fetching the ytcloud command" 85 100 bash -c fetch_cmd
-FETCH_RC=$?
-echo
-if [ "$FETCH_RC" -ne 0 ]; then
-  CODE="$(cat "$STATE_DIR/http_code" 2>/dev/null || echo '?')"
+if ! run_step "Fetching the ytcloud command" 85 100 bash -c fetch_cmd; then
+  CODE="$(cat "$STATE_DIR/http_code" 2>/dev/null || echo '000')"
   rm -f "$BIN.new"
   die "Could not fetch ytcloud (HTTP $CODE). Check your internet connection and try again."
 fi
+
+finish_render
+echo
 
 chmod 755 "$BIN.new"
 mv -f "$BIN.new" "$BIN" || die "Could not install $BIN"
