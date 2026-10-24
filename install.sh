@@ -26,7 +26,7 @@ print_header() {
   local title="YT Cloud CLI"
   local subtitle="YouTube Downloader For Termux"
   local dev_label="Developed" dev_value="Rira Project"
-  local gh_label="Github" gh_value="$REPO_URL"
+  local gh_label="Github" gh_value="${REPO_URL#*github.com/}"
   local w=0 l
   for l in "$title" "$subtitle" "${dev_label} : ${dev_value}" "${gh_label} : ${gh_value}"; do
     [ ${#l} -gt "$w" ] && w=${#l}
