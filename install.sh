@@ -14,45 +14,75 @@ API_KEY="068c2a75086b0d3c4e003c8424abb0adfe074c539fe7e8b00d0f000c413a45e0"
 REPO_URL="https://github.com/pembri/ytcloud-cli"
 
 if [ -t 1 ]; then
-  C_B=$'\033[1;36m'; C_W=$'\033[1;37m'; C_D=$'\033[2m'
-  C_G=$'\033[32m'; C_R=$'\033[31m'; C_0=$'\033[0m'
+  C_B=$'\033[1;36m'; C_W=$'\033[1;97m'; C_SUB=$'\033[1;95m'
+  C_LBL=$'\033[96m'; C_VER=$'\033[1;92m'; C_DEV=$'\033[1;93m'; C_GH=$'\033[1;94m'
+  C_R=$'\033[31m'; C_0=$'\033[0m'
 else
-  C_B=""; C_W=""; C_D=""; C_G=""; C_R=""; C_0=""
+  C_B=""; C_W=""; C_SUB=""; C_LBL=""; C_VER=""; C_DEV=""; C_GH=""; C_R=""; C_0=""
 fi
 
 clear_screen() { [ -t 1 ] && printf '\033[2J\033[3J\033[H'; }
 
+LOGO=(
+  '##\     ##\ ########\  ######\  ##\                           ##\ '
+  '\##\   ##  |\__##  __|##  __##\ ## |                          ## |'
+  ' \##\ ##  /    ## |   ## /  \__|## | ######\  ##\   ##\  ####### |'
+  '  \####  /     ## |   ## |      ## |##  __##\ ## |  ## |##  __## |'
+  '   \##  /      ## |   ## |      ## |## /  ## |## |  ## |## /  ## |'
+  '    ## |       ## |   ## |  ##\ ## |## |  ## |## |  ## |## |  ## |'
+  '    ## |       ## |   \######  |## |\######  |\######  |\####### |'
+  '    \__|       \__|    \______/ \__| \______/  \______/  \_______|'
+)
+
 print_header() {
+  local l
+  for l in "${LOGO[@]}"; do
+    printf '%s%s%s\n' "$C_B" "$l" "$C_0"
+  done
+  echo
+
   local title="YT Cloud CLI"
   local subtitle="YouTube Downloader For Termux"
   local dev_label="Developed" dev_value="Rira Project"
-  local gh_label="Github" gh_value="${REPO_URL#*github.com/}"
-  local w=0 l
-  for l in "$title" "$subtitle" "${dev_label} : ${dev_value}" "${gh_label} : ${gh_value}"; do
-    [ ${#l} -gt "$w" ] && w=${#l}
+  local gh_label="Github" gh_value="$REPO_URL"
+
+  local label_w=${#dev_label}
+  [ ${#gh_label} -gt "$label_w" ] && label_w=${#gh_label}
+  local dev_label_pad gh_label_pad
+  printf -v dev_label_pad '%-*s' "$label_w" "$dev_label"
+  printf -v gh_label_pad '%-*s' "$label_w" "$gh_label"
+  local dev_row="${dev_label_pad} : ${dev_value}"
+  local gh_row="${gh_label_pad} : ${gh_value}"
+
+  local w=0 x
+  for x in "$title" "$subtitle" "$dev_row" "$gh_row"; do
+    [ ${#x} -gt "$w" ] && w=${#x}
   done
   w=$(( w + 4 ))
 
-  local line; line=$(printf '═%.0s' $(seq 1 "$w"))
-  printf '%s╔%s╗%s\n' "$C_B" "$line" "$C_0"
+  local EDGE_L="${C_B}##${C_0}"
+  local EDGE_R="${C_B}## |${C_0}"
+
+  printf '%s%s\\%s\n' "$C_B" "$(printf '#%.0s' $(seq 1 $((w + 4))))" "$C_0"
 
   local pad left right
   pad=$(( w - ${#title} )); left=$(( pad / 2 )); right=$(( pad - left ))
-  printf '%s║%s%*s%s%s%s%*s%s║%s\n' "$C_B" "$C_0" "$left" '' "$C_W" "$title" "$C_0" "$right" '' "$C_B" "$C_0"
+  printf '%s%*s%s%s%s%*s%s\n' "$EDGE_L" "$left" '' "$C_W" "$title" "$C_0" "$right" '' "$EDGE_R"
 
   pad=$(( w - ${#subtitle} )); left=$(( pad / 2 )); right=$(( pad - left ))
-  printf '%s║%s%*s%s%s%s%*s%s║%s\n' "$C_B" "$C_0" "$left" '' "$C_D" "$subtitle" "$C_0" "$right" '' "$C_B" "$C_0"
+  printf '%s%*s%s%s%s%*s%s\n' "$EDGE_L" "$left" '' "$C_SUB" "$subtitle" "$C_0" "$right" '' "$EDGE_R"
 
-  local text pad2
-  text="${dev_label} : ${dev_value}"
-  pad2=$(( w - ${#text} - 1 ))
-  printf '%s║%s%*s%s%s%s : %s%s%s %s║%s\n' "$C_B" "$C_0" "$pad2" '' "$C_D" "$dev_label" "$C_0" "$C_W" "$dev_value" "$C_0" "$C_B" "$C_0"
+  printf '%s%*s%s\n' "$EDGE_L" "$w" '' "$EDGE_R"
 
-  text="${gh_label} : ${gh_value}"
-  pad2=$(( w - ${#text} - 1 ))
-  printf '%s║%s%*s%s%s%s : %s%s%s %s║%s\n' "$C_B" "$C_0" "$pad2" '' "$C_D" "$gh_label" "$C_0" "$C_W" "$gh_value" "$C_0" "$C_B" "$C_0"
+  local trailing
+  trailing=$(( w - 2 - ${#dev_row} ))
+  printf '%s  %s%s%s : %s%s%s%*s%s\n' "$EDGE_L" "$C_LBL" "$dev_label_pad" "$C_0" "$C_DEV" "$dev_value" "$C_0" "$trailing" '' "$EDGE_R"
 
-  printf '%s╚%s╝%s\n' "$C_B" "$line" "$C_0"
+  trailing=$(( w - 2 - ${#gh_row} ))
+  printf '%s  %s%s%s : %s%s%s%*s%s\n' "$EDGE_L" "$C_LBL" "$gh_label_pad" "$C_0" "$C_GH" "$gh_value" "$C_0" "$trailing" '' "$EDGE_R"
+
+  printf '%s\\%s |%s\n' "$C_B" "$(printf '#%.0s' $(seq 1 $((w + 3))))" "$C_0"
+  printf '%s \\%s/%s\n' "$C_B" "$(printf '_%.0s' $(seq 1 $((w + 2))))" "$C_0"
 }
 
 WIDTH=30
