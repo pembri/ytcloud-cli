@@ -5,14 +5,14 @@
 ## Features
 
 - Download YouTube **videos** as MP4 in any available resolution (no re-encoding, so it is fast and keeps the original quality)
-- Download **audio** as WEBM or M4A (original streams), or as MP3, OPUS, FLAC and WAV (converted automatically with FFmpeg)
+- Download **audio** as WEBM or M4A (original streams), or as MP3, OPUS, FLAC and WAV (converted automatically)
 - **Multi-download**: give several links and get them all in one run
 - Shortcut commands: `--videos` and `--audio` skip the format menu
-- Size estimate and confirmation before every download
-- Automatic retry when YouTube temporarily refuses a download (HTTP 403)
+- Every selection menu has a `0) Exit` option to cancel cleanly
+- Automatic retry when YouTube temporarily refuses a download, tried quietly in the background — you only see an error if every attempt fails
 - Built-in repair command (`--fix`) and one-command update (`--update`)
 - Videos and audio are saved in separate folders
-- Colorized, easy-to-read terminal UI
+- Colorized terminal UI that clears the screen before every run, so output never piles up
 - Single-file installer and a clean uninstaller that never touches your downloads
 
 ## Requirements
@@ -21,7 +21,7 @@
 - Internet connection
 - `git` (only to clone this repo): `pkg install git`
 
-Everything else (Python, FFmpeg, yt-dlp, Deno, curl) is installed by the installer.
+Everything else needed to run YT Cloud CLI is installed automatically by the installer.
 
 ## Installation
 
@@ -31,12 +31,9 @@ pkg install -y git && git clone https://github.com/pembri/ytcloud-cli && cd ytcl
 
 The installer will automatically:
 1. Check that you are running Termux
-2. Install `python`, `ffmpeg` and `deno`, and check the MP3 and OPUS encoders
-3. Install `yt-dlp`
-4. Check storage access (tap **Allow** when Android asks for permission)
-5. Fetch the `ytcloud` command and install it so it can be run from anywhere
-
-The cloned `ytcloud-cli` folder is removed automatically once installation finishes — you don't need to clean it up yourself, and it isn't needed to run `ytcloud` afterward.
+2. Prepare the environment (a single progress bar, no clutter)
+3. Check storage access (tap **Allow** when Android asks for permission)
+4. Fetch and install the `ytcloud` command so it can be run from anywhere
 
 If you see `command not found` after installing, run `exec $SHELL` and try again.
 
@@ -51,24 +48,39 @@ If you see `command not found` after installing, run `exec $SHELL` and try again
 | `ytcloud --audio "URL"` | Download audio directly (skips the format menu) |
 | `ytcloud --version` | Show the version number |
 | `ytcloud --help` | Show the help page |
-| `ytcloud --fix` | Fix download errors: updates yt-dlp first, then Deno |
-| `ytcloud --update` | Update to the latest version |
+| `ytcloud --fix` | Fix download errors (refreshes required components) |
+| `ytcloud --update` | Update to the latest version (pulls this repo and reinstalls) |
 | `ytcloud --remove` | Uninstall YT Cloud CLI |
 
 Interactive mode looks like this:
 
 ```
-╔══════════════════════════════════╗
-║   YT Cloud CLI by Rira Project   ║
-╚══════════════════════════════════╝
+##\     ##\ ########\  ######\  ##\                           ##\
+\##\   ##  |\__##  __|##  __##\ ## |                          ## |
+ \##\ ##  /    ## |   ## /  \__|## | ######\  ##\   ##\  ####### |
+  \####  /     ## |   ## |      ## |##  __##\ ## |  ## |##  __## |
+   \##  /      ## |   ## |      ## |## /  ## |## |  ## |## /  ## |
+    ## |       ## |   ## |  ##\ ## |## |  ## |## |  ## |## |  ## |
+    ## |       ## |   \######  |## |\######  |\######  |\####### |
+    \__|       \__|    \______/ \__| \______/  \______/  \_______|
+
+#########################################################\
+##                    YT Cloud CLI                     ## |
+##            YouTube Downloader For Termux            ## |
+##                                                     ## |
+##  Version   : v1.9                                   ## |
+##  Developed : Rira Project                           ## |
+##  Github    : https://github.com/pembri/ytcloud-cli  ## |
+\######################################################## |
+ \_________________________________________________________/
 
 Input URL :
 ```
 
 Steps:
 1. Paste one or more links (separated by spaces)
-2. Choose **Format Videos** or **Format Audio**
-3. Choose the resolution or audio format
+2. Choose **Format Videos** or **Format Audio** (or `0` to exit)
+3. Choose the resolution or audio format (or `0` to exit)
 4. Check the estimated size and confirm with `y`
 5. The files are saved to their matching folder
 
@@ -87,30 +99,20 @@ Steps:
 |---|---|---|
 | WEBM | Original stream | No conversion, available qualities depend on the video |
 | M4A | Original stream | No conversion, available qualities depend on the video |
-| MP3 (320 / 192 / 128 kbps) | Converted | Converted with FFmpeg |
+| MP3 (320 / 192 / 128 kbps) | Converted | Good compatibility |
 | OPUS | Repacked or converted | No quality loss when the source is already Opus |
 | FLAC | Converted, lossless | Large files |
-| WAV | Converted, PCM 16-bit | Large files |
+| WAV | Converted, lossless | Largest files |
 
-## Download Location
+## Fixing download errors
 
-```
-/sdcard/Download/ytcloud/
-├── Videos/
-└── Audio/
-```
+If downloads start failing (YouTube extraction changes happen from time to time):
 
-The folders are created automatically on the first download.
-
-## Repo Structure
-
-```
-ytcloud-cli/
-├── install.sh
-└── README.md
+```bash
+ytcloud --fix
 ```
 
-`install.sh` fetches the `ytcloud` command and installs it directly to Termux's `bin` folder. The cloned repo folder is deleted automatically right after installation, so nothing is left behind except the ready-to-use `ytcloud` command.
+This refreshes the components YT Cloud CLI depends on and tests that downloads work again.
 
 ## Updating
 
@@ -118,37 +120,12 @@ ytcloud-cli/
 ytcloud --update
 ```
 
-This clones a fresh, temporary copy of this repo, reinstalls `ytcloud` from it, and removes the temporary copy afterward — so you always end up on the latest version without any leftover files. The installer also refreshes yt-dlp and Deno while it runs.
+This pulls the latest version of this repo and reinstalls the `ytcloud` command. Your downloaded files are never touched.
 
-If your version is too old to have `--update`, update once by hand:
-
-```bash
-git clone https://github.com/pembri/ytcloud-cli && cd ytcloud-cli && chmod +x install.sh && ./install.sh
-```
-
-## Uninstall
+## Uninstalling
 
 ```bash
 ytcloud --remove
 ```
 
-This will remove:
-- The `ytcloud` command
-- The install record
-- The yt-dlp cache
-
-You'll also be asked whether to keep or remove the packages the installer added on top of what was already on your device (for example `ffmpeg`, `deno`, or `yt-dlp` if they weren't installed before). Keeping them is the safe default if you plan to reinstall later or use them for something else.
-
-Your downloaded files in `/sdcard/Download/ytcloud` are **never** deleted. The folder is only removed when it is completely empty.
-
-## Notes
-
-- Put links in quotes, or use the `Input URL :` prompt. Links containing `&` or `?` can be misread by the terminal.
-- Only the single video in a link is downloaded, not whole playlists.
-- Private or login-required content cannot be downloaded.
-- yt-dlp needs a JavaScript runtime (Deno) to read YouTube. If downloads fail with errors about a JS runtime, cookies or `HTTP 403`, run `ytcloud --fix`.
-- This tool uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org/) as its core engines.
-
-## License
-
-For personal use. Please respect content owners' copyright when downloading or redistributing media.
+This removes the `ytcloud` command and the installer's own files. Your downloaded files in `/sdcard/Download/ytcloud` are always kept. You will be asked separately whether to also remove the components the installer added, if any.
