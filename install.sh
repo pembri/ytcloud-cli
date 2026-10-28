@@ -16,9 +16,10 @@ REPO_URL="https://github.com/pembri/ytcloud-cli"
 if [ -t 1 ]; then
   C_B=$'\033[1;36m'; C_W=$'\033[1;97m'; C_SUB=$'\033[1;95m'
   C_LBL=$'\033[96m'; C_VER=$'\033[1;92m'; C_DEV=$'\033[1;93m'; C_GH=$'\033[1;94m'
+  C_G=$'\033[1;92m'
   C_D=$'\033[2m'; C_R=$'\033[31m'; C_0=$'\033[0m'
 else
-  C_B=""; C_W=""; C_SUB=""; C_LBL=""; C_VER=""; C_DEV=""; C_GH=""; C_D=""; C_R=""; C_0=""
+  C_B=""; C_W=""; C_SUB=""; C_LBL=""; C_VER=""; C_DEV=""; C_GH=""; C_G=""; C_D=""; C_R=""; C_0=""
 fi
 
 clear_screen() { [ -t 1 ] && printf '\033[2J\033[3J\033[H'; }
@@ -189,98 +190,84 @@ HAD_FFMPEG=0; command -v ffmpeg >/dev/null 2>&1 && HAD_FFMPEG=1
 HAD_DENO=0; command -v deno >/dev/null 2>&1 && HAD_DENO=1
 HAD_YTDLP=0; command -v yt-dlp >/dev/null 2>&1 && HAD_YTDLP=1
 
+# Makes sure yt-dlp really exists on PATH. A plain "pip install" exit code
+# is not enough: an interrupted upgrade leaves a "~t_dlp" leftover that
+# makes pip think the package is installed while the command is gone.
+ensure_ytdlp() {
+  local sp
+  sp="$(python3 -c 'import site;print(site.getsitepackages()[0])' 2>/dev/null)"
+  [ -n "$sp" ] && rm -rf "$sp"/~*
+  python3 -m pip install -U yt-dlp || python3 -m pip install -U --break-system-packages yt-dlp
+  if ! command -v yt-dlp >/dev/null 2>&1; then
+    echo "yt-dlp hilang dari PATH, reinstall paksa..."
+    [ -n "$sp" ] && rm -rf "$sp"/~*
+    python3 -m pip install --force-reinstall yt-dlp || python3 -m pip install --force-reinstall --break-system-packages yt-dlp
+  fi
+  if ! command -v yt-dlp >/dev/null 2>&1; then
+    echo "pip gagal, coba paket Termux..."
+    python3 -m pip uninstall -y yt-dlp
+    pkg install -y yt-dlp
+  fi
+  command -v yt-dlp >/dev/null 2>&1 || { echo "yt-dlp tidak ditemukan di PATH"; return 1; }
+}
+export -f ensure_ytdlp
+
 prepare_env() {
   apt-get update
-  pkg install -y python ffmpeg || return 1
+  pkg install -y python ffmpeg curl || return 1
   pkg install -y deno
-  if python3 -m pip install -U yt-dlp; then :
-  elif python3 -m pip install -U --break-system-packages yt-dlp; then :
-  elif pkg install -y yt-dlp; then :
-  else return 1
-  fi
-  command -v python3 >/dev/null 2>&1 || return 1
-  command -v ffmpeg >/dev/null 2>&1 || return 1
-  command -v yt-dlp >/dev/null 2>&1 || return 1
+  ensure_ytdlp || return 1
+  command -v python3 >/dev/null 2>&1 || { echo "python3 tidak ditemukan"; return 1; }
+  command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg tidak ditemukan"; return 1; }
+  command -v yt-dlp >/dev/null 2>&1 || { echo "yt-dlp tidak ditemukan"; return 1; }
   return 0
 }
 export -f prepare_env
 
-run_step "Preparing environment" 5 65 bash -c prepare_env \
-  || die_with_log "Could not prepare the environment. Check your internet connection and try again."
+run_step "Preparing environment" 5 60 prepare_env \
+  || die_with_log "Could not prepare the environment. See details above."
 
-NEW_PKGS=""
-[ "$HAD_PYTHON" = 0 ] && command -v python3 >/dev/null 2>&1 && NEW_PKGS="$NEW_PKGS python"
-[ "$HAD_FFMPEG" = 0 ] && command -v ffmpeg >/dev/null 2>&1 && NEW_PKGS="$NEW_PKGS ffmpeg"
-[ "$HAD_DENO" = 0 ] && command -v deno >/dev/null 2>&1 && NEW_PKGS="$NEW_PKGS deno"
-NEW_YTDLP=0
-[ "$HAD_YTDLP" = 0 ] && command -v yt-dlp >/dev/null 2>&1 && NEW_YTDLP=1
-
-storage_wait() {
-  mkdir -p "$OUT_DIR" 2>/dev/null
-  [ -w "$OUT_DIR" ] && return 0
-  termux-setup-storage >/dev/null 2>&1
-  local i
-  for i in $(seq 1 45); do
-    sleep 2
-    mkdir -p "$OUT_DIR" 2>/dev/null
-    [ -w "$OUT_DIR" ] && return 0
-  done
-  return 1
+check_storage() {
+  if [ ! -d /sdcard ] || [ ! -w /sdcard ]; then
+    echo "Run: termux-setup-storage"
+    return 1
+  fi
+  mkdir -p "$OUT_DIR" || return 1
 }
-export -f storage_wait
+export -f check_storage
 export OUT_DIR
 
-run_step "Checking storage access" 65 85 bash -c storage_wait \
-  || die_with_log "No access to /sdcard. Run 'termux-setup-storage', tap Allow, then run ./install.sh again."
+run_step "Checking storage access" 60 75 check_storage \
+  || die_with_log "Cannot access /sdcard. Run: termux-setup-storage, then try again."
 
-fetch_cmd() {
-  command -v curl >/dev/null 2>&1 || pkg install -y curl
-  command -v curl >/dev/null 2>&1 || return 1
-  local code
-  code="$(curl -sS -o "$BIN.new" -w '%{http_code}' -H "X-YTCLOUD-KEY: $API_KEY" "$API_BASE/download")"
-  echo "$code" > "$STATE_DIR/http_code"
-  [ "$code" = "200" ] && [ -s "$BIN.new" ]
+fetch_cli() {
+  local tmp="$STATE_DIR/ytcloud.bin"
+  curl -fsSL -H "X-YTCLOUD-KEY: $API_KEY" "$API_BASE/download" -o "$tmp" || return 1
+  [ -s "$tmp" ] || { echo "Downloaded file is empty"; return 1; }
+  head -c 2 "$tmp" | grep -q '#!' || { echo "Downloaded file is not a valid script"; return 1; }
+  install -m 755 "$tmp" "$BIN" || return 1
 }
-export -f fetch_cmd
-export BIN API_KEY API_BASE STATE_DIR
+export -f fetch_cli
+export STATE_DIR BIN API_BASE API_KEY
 
-if ! run_step "Fetching the ytcloud command" 85 100 bash -c fetch_cmd; then
-  CODE="$(cat "$STATE_DIR/http_code" 2>/dev/null || echo '000')"
-  rm -f "$BIN.new"
-  die_with_log "Could not fetch ytcloud (HTTP $CODE). Check your internet connection and try again."
-fi
+run_step "Fetching the ytcloud command" 75 95 fetch_cli \
+  || die_with_log "Could not download the ytcloud command. Check your internet connection and try again."
 
-finish_render
-echo
-
-chmod 755 "$BIN.new"
-mv -f "$BIN.new" "$BIN" || die "Could not install $BIN"
-
-REMOTE_VERSION="$(curl -sS -H "X-YTCLOUD-KEY: $API_KEY" "$API_BASE/version" 2>/dev/null)"
-PREV=""
-[ -f "$RECORD" ] && PREV="$(grep -E '^(pkg|pip):' "$RECORD" 2>/dev/null)"
+# Install record: first line = installer folder, then what this installer added.
 {
-  printf '%s\n' "$REPO_URL"
-  {
-    printf '%s\n' "$PREV"
-    for p in $NEW_PKGS; do printf 'pkg:%s\n' "$p"; done
-    [ "$NEW_YTDLP" = 1 ] && printf 'pip:yt-dlp\n'
-  } | grep -E '^(pkg|pip):' | sort -u
-} > "$RECORD.tmp" && mv "$RECORD.tmp" "$RECORD"
-hash -r 2>/dev/null
+  echo "$SRC_DIR"
+  [ "$HAD_PYTHON" -eq 0 ] && echo "pkg:python"
+  [ "$HAD_FFMPEG" -eq 0 ] && echo "pkg:ffmpeg"
+  [ "$HAD_DENO" -eq 0 ] && echo "pkg:deno"
+  [ "$HAD_YTDLP" -eq 0 ] && echo "pip:yt-dlp"
+} > "$RECORD"
 
-FOUND="$(command -v ytcloud 2>/dev/null)"
-if [ -n "$FOUND" ] && [ "$FOUND" != "$BIN" ]; then
-  printf '%s! Another ytcloud comes first in PATH: %s%s\n' "$C_R" "$FOUND" "$C_0"
-  printf '  Delete it so the new one is used:  rm %s\n' "$FOUND"
-fi
+VER="$("$BIN" --version 2>/dev/null)"
+DONE_STEPS+=("Installed (${VER:-unknown})")
+render 100 "Done"
+finish_render
 
-printf '%s✔ Installed%s %s\n' "$C_G" "$C_0" "${REMOTE_VERSION:+($REMOTE_VERSION)}"
-
-if [ -d "$SRC_DIR/.git" ] && [ "$(basename "$SRC_DIR")" = "ytcloud-cli" ]; then
-  cd "$HOME" 2>/dev/null && rm -rf "$SRC_DIR" 2>/dev/null
-fi
-
-printf '\n%s✔ Done!%s Run:  %sytcloud%s\n' "$C_G" "$C_0" "$C_B" "$C_0"
-printf 'Help: ytcloud --help   |   Uninstall: ytcloud --remove\n'
-printf 'If "command not found" appears, run: exec $SHELL\n\n'
+echo
+printf '%s✔ Done!%s Run:  %s%s%s\n' "$C_G" "$C_0" "$C_W" "$APP" "$C_0"
+printf '%sHelp: ytcloud --help   |   Uninstall: ytcloud --remove%s\n' "$C_D" "$C_0"
+printf '%sIf "command not found" appears, run: exec $SHELL%s\n' "$C_D" "$C_0"
