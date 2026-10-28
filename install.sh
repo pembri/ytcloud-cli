@@ -143,7 +143,7 @@ die_with_log() {
   finish_render
   if [ -s "$STATE_DIR/log" ]; then
     printf '\n%s--- details ---%s\n' "$C_D" "$C_0"
-    tail -n 15 "$STATE_DIR/log"
+    cat "$STATE_DIR/log"
     printf '%s---------------%s\n' "$C_D" "$C_0"
   fi
   printf '\n%s✖ %s%s\n' "$C_R" "$1" "$C_0"
