@@ -16,9 +16,9 @@ REPO_URL="https://github.com/pembri/ytcloud-cli"
 if [ -t 1 ]; then
   C_B=$'\033[1;36m'; C_W=$'\033[1;97m'; C_SUB=$'\033[1;95m'
   C_LBL=$'\033[96m'; C_VER=$'\033[1;92m'; C_DEV=$'\033[1;93m'; C_GH=$'\033[1;94m'
-  C_R=$'\033[31m'; C_0=$'\033[0m'
+  C_D=$'\033[2m'; C_R=$'\033[31m'; C_0=$'\033[0m'
 else
-  C_B=""; C_W=""; C_SUB=""; C_LBL=""; C_VER=""; C_DEV=""; C_GH=""; C_R=""; C_0=""
+  C_B=""; C_W=""; C_SUB=""; C_LBL=""; C_VER=""; C_DEV=""; C_GH=""; C_D=""; C_R=""; C_0=""
 fi
 
 clear_screen() { [ -t 1 ] && printf '\033[2J\033[3J\033[H'; }
@@ -137,6 +137,19 @@ die() {
   exit 1
 }
 
+# Like die(), but also shows the last lines of $STATE_DIR/log so a real
+# failure (not just "no internet") can actually be diagnosed.
+die_with_log() {
+  finish_render
+  if [ -s "$STATE_DIR/log" ]; then
+    printf '\n%s--- details ---%s\n' "$C_D" "$C_0"
+    tail -n 15 "$STATE_DIR/log"
+    printf '%s---------------%s\n' "$C_D" "$C_0"
+  fi
+  printf '\n%s✖ %s%s\n' "$C_R" "$1" "$C_0"
+  exit 1
+}
+
 # Runs "$@" in the background while animating the bar from $2 to $3-1,
 # then snaps to $3 when the job finishes. On success, marks the step done
 # (so it becomes a permanent checklist line) and returns 0; else returns 1.
@@ -177,12 +190,12 @@ HAD_DENO=0; command -v deno >/dev/null 2>&1 && HAD_DENO=1
 HAD_YTDLP=0; command -v yt-dlp >/dev/null 2>&1 && HAD_YTDLP=1
 
 prepare_env() {
-  apt-get update >/dev/null 2>&1
-  pkg install -y python ffmpeg >/dev/null 2>&1 || return 1
-  pkg install -y deno >/dev/null 2>&1
-  if python3 -m pip install -U yt-dlp >/dev/null 2>&1; then :
-  elif python3 -m pip install -U --break-system-packages yt-dlp >/dev/null 2>&1; then :
-  elif pkg install -y yt-dlp >/dev/null 2>&1; then :
+  apt-get update
+  pkg install -y python ffmpeg || return 1
+  pkg install -y deno
+  if python3 -m pip install -U yt-dlp; then :
+  elif python3 -m pip install -U --break-system-packages yt-dlp; then :
+  elif pkg install -y yt-dlp; then :
   else return 1
   fi
   command -v python3 >/dev/null 2>&1 || return 1
@@ -193,7 +206,7 @@ prepare_env() {
 export -f prepare_env
 
 run_step "Preparing environment" 5 65 bash -c prepare_env \
-  || die "Could not prepare the environment. Check your internet connection and try again."
+  || die_with_log "Could not prepare the environment. Check your internet connection and try again."
 
 NEW_PKGS=""
 [ "$HAD_PYTHON" = 0 ] && command -v python3 >/dev/null 2>&1 && NEW_PKGS="$NEW_PKGS python"
@@ -218,10 +231,10 @@ export -f storage_wait
 export OUT_DIR
 
 run_step "Checking storage access" 65 85 bash -c storage_wait \
-  || die "No access to /sdcard. Run 'termux-setup-storage', tap Allow, then run ./install.sh again."
+  || die_with_log "No access to /sdcard. Run 'termux-setup-storage', tap Allow, then run ./install.sh again."
 
 fetch_cmd() {
-  command -v curl >/dev/null 2>&1 || pkg install -y curl >/dev/null 2>&1
+  command -v curl >/dev/null 2>&1 || pkg install -y curl
   command -v curl >/dev/null 2>&1 || return 1
   local code
   code="$(curl -sS -o "$BIN.new" -w '%{http_code}' -H "X-YTCLOUD-KEY: $API_KEY" "$API_BASE/download")"
@@ -234,7 +247,7 @@ export BIN API_KEY API_BASE STATE_DIR
 if ! run_step "Fetching the ytcloud command" 85 100 bash -c fetch_cmd; then
   CODE="$(cat "$STATE_DIR/http_code" 2>/dev/null || echo '000')"
   rm -f "$BIN.new"
-  die "Could not fetch ytcloud (HTTP $CODE). Check your internet connection and try again."
+  die_with_log "Could not fetch ytcloud (HTTP $CODE). Check your internet connection and try again."
 fi
 
 finish_render
