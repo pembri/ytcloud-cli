@@ -48,7 +48,6 @@ If you see `command not found` after installing, run `exec $SHELL` and try again
 | `ytcloud --audio "URL"` | Download audio directly (skips the format menu) |
 | `ytcloud --version` | Show the version number |
 | `ytcloud --help` | Show the help page |
-| `ytcloud --fix` | Fix download errors (refreshes required components) |
 | `ytcloud --update` | Update to the latest version (pulls this repo and reinstalls) |
 | `ytcloud --remove` | Uninstall YT Cloud CLI |
 
@@ -103,16 +102,6 @@ Steps:
 | OPUS | Repacked or converted | No quality loss when the source is already Opus |
 | FLAC | Converted, lossless | Large files |
 | WAV | Converted, lossless | Largest files |
-
-## Fixing download errors
-
-If downloads start failing (YouTube extraction changes happen from time to time):
-
-```bash
-ytcloud --fix
-```
-
-This refreshes the components YT Cloud CLI depends on and tests that downloads work again.
 
 ## Updating
 
